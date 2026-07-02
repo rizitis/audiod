@@ -1,0 +1,5 @@
+# /etc/rc.d/rc.local
+# Start the audio session manager (needs elogind up first)
+if [ -x /etc/rc.d/rc.audiod ]; then
+  /etc/rc.d/rc.audiod start
+fi

@@ -1,0 +1,7 @@
+exit 0
+
+Αμα στραβώσει:
+/etc/rc.d/rc.audiod stop      # σταμάτα τον reactor
+chmod -x /etc/rc.d/rc.audiod  # μη ξεκινήσει στο επόμενο boot
+/usr/sbin/audiod-restore.sh   # ξαναενεργοποίησε τους stock starters
+reboot                        # καθαρή εκκίνηση, ήχος όπως πριν το audiod

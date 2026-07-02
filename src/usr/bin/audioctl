@@ -1,0 +1,63 @@
+#!/bin/bash
+#
+# audioctl -- control YOUR PipeWire stack, as your own user, no root, no logout.
+#
+# A thin, safe frontend over the same libslack daemon(1) supervisors that
+# audiod uses. It shares audiod's stack definition and audio-server gate, so
+# it never fights the system policy: in PulseAudio mode it stands down too.
+
+LIB=/usr/libexec/audiod/audiod-lib.sh
+. "$LIB" || { echo "audioctl: cannot source $LIB" >&2; exit 1; }
+load_config
+
+UID_="$(id -u)"
+ME="$(id -un)"
+
+usage() {
+    cat <<EOF
+Usage: audioctl <command> [component]
+
+  status              show state of your PipeWire stack
+  start               start the stack (ordered)
+  stop                stop the stack (targeted)
+  restart             restart the whole stack (ordered)
+  restart <name>      restart a single service (e.g. wireplumber)
+
+Components come from /etc/audiod/stack.conf.
+EOF
+}
+
+# Respect the same gate as audiod (agreed: option B -- consistent policy).
+if ! is_pipewire_mode; then
+    echo "System is in PulseAudio mode; PipeWire management is inactive."
+    echo "Switch with Slackware's pipewire-enable.sh (or set AUDIO_SERVER in"
+    echo "/etc/audiod/audiod.conf) to use PipeWire."
+    exit 1
+fi
+
+case "${1:-}" in
+    status)
+        echo "PipeWire stack for $ME (uid $UID_):"
+        status_stack "$UID_"
+        ;;
+    start)
+        start_stack "$UID_"
+        ;;
+    stop)
+        stop_stack "$UID_"
+        ;;
+    restart)
+        if [ -n "${2:-}" ]; then
+            restart_one "$UID_" "$2"
+        else
+            stop_stack "$UID_"; sleep 1; start_stack "$UID_"
+        fi
+        ;;
+    -h|--help|help|'')
+        usage
+        ;;
+    *)
+        echo "audioctl: unknown command '$1'" >&2
+        usage; exit 1
+        ;;
+esac

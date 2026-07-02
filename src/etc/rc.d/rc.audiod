@@ -1,0 +1,59 @@
+#!/bin/sh
+# /etc/rc.d/rc.audiod
+#
+# Start/stop the audiod audio session manager.
+#
+# audiod must start AFTER elogind (it talks to org.freedesktop.login1). Call
+# it near the end of the boot, e.g. from /etc/rc.d/rc.local:
+#
+#     if [ -x /etc/rc.d/rc.audiod ]; then
+#         /etc/rc.d/rc.audiod start
+#     fi
+#
+# Enable at boot the Slackware way:  chmod +x /etc/rc.d/rc.audiod
+# Disable:                            chmod -x /etc/rc.d/rc.audiod
+#
+# Note: stopping audiod does NOT stop anyone's audio. The PipeWire daemons are
+# supervised independently by libslack daemon(1); audiod is only the
+# orchestrator. On restart it reconciles and adopts what is already running.
+
+DAEMON=/usr/sbin/audiod
+PIDFILE=/run/audiod.pid
+
+running() { [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
+
+start() {
+    if running; then
+        echo "audiod already running (pid $(cat "$PIDFILE"))."; return 0
+    fi
+    if [ ! -x "$DAEMON" ]; then
+        echo "audiod: $DAEMON not found."; return 1
+    fi
+    echo "Starting audiod:  $DAEMON"
+    "$DAEMON" &
+    echo $! > "$PIDFILE"
+}
+
+stop() {
+    echo "Stopping audiod..."
+    if running; then
+        kill -TERM "$(cat "$PIDFILE")" 2>/dev/null
+    fi
+    rm -f "$PIDFILE"
+}
+
+status() {
+    if running; then
+        echo "audiod is running (pid $(cat "$PIDFILE"))."
+    else
+        echo "audiod is not running."
+    fi
+}
+
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; sleep 1; start ;;
+    status)  status ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac

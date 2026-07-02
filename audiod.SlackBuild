@@ -1,0 +1,97 @@
+#!/bin/bash
+
+# SlackBuild script for audiod
+#
+# Copyright 2026 Ioannis Anagnostakis, Crete, Greece
+# All rights reserved.
+#
+# Redistribution and use of this script, with or without modification, is
+# permitted provided that the following conditions are met:
+#
+# 1. Redistributions of this script must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR "AS IS" AND ANY EXPRESS OR IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DAMAGES WHATSOEVER
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE.
+
+# audiod is pure shell (no compilation). This SlackBuild packages the source
+# tree that sits next to it under ./src/ into a proper Slackware package with
+# correct paths/ownership/permissions and .new config handling.
+
+cd $(dirname $0) ; CWD=$(pwd)
+
+PRGNAM=audiod
+VERSION=${VERSION:-0.1.0}
+BUILD=${BUILD:-5}
+TAG=${TAG:-_rtz}
+PKGTYPE=${PKGTYPE:-txz}
+
+# noarch: shell only
+ARCH=noarch
+
+if [ ! -z "${PRINT_PACKAGE_NAME}" ]; then
+  echo "$PRGNAM-$VERSION-$ARCH-$BUILD$TAG.$PKGTYPE"
+  exit 0
+fi
+
+TMP=${TMP:-/tmp/FORGE}
+PKG=$TMP/package-$PRGNAM
+OUTPUT=${OUTPUT:-/tmp}
+
+# The source tree shipped alongside this SlackBuild:
+SRC=$CWD/src
+
+set -e
+
+rm -rf $PKG
+mkdir -p $TMP $PKG $OUTPUT
+
+# --- lay down the tree with correct perms/owners --------------------------
+install -d -m 0755                                   $PKG/usr/sbin
+install -d -m 0755                                   $PKG/usr/bin
+install -d -m 0755                                   $PKG/usr/libexec/audiod
+install -d -m 0755                                   $PKG/etc/audiod
+install -d -m 0755                                   $PKG/etc/rc.d
+
+# executables
+cp $SRC/usr/sbin/audiod             $PKG/usr/sbin/audiod
+cp $SRC/usr/sbin/audiod-takeover.sh $PKG/usr/sbin/audiod-takeover.sh
+cp $SRC/usr/sbin/audiod-restore.sh  $PKG/usr/sbin/audiod-restore.sh
+cp $SRC/usr/bin/audioctl            $PKG/usr/bin/audioctl
+chmod 0755 $PKG/usr/sbin/audiod \
+           $PKG/usr/sbin/audiod-takeover.sh \
+           $PKG/usr/sbin/audiod-restore.sh \
+           $PKG/usr/bin/audioctl \
+           $PKG/usr/bin/audioctl
+
+# sourced library (NOT executable)
+install -m 0644 $SRC/usr/libexec/audiod/audiod-lib.sh \
+                                                     $PKG/usr/libexec/audiod/audiod-lib.sh
+
+# config + rc as .new (doinst.sh installs/preserves them)
+install -m 0644 $SRC/etc/audiod/audiod.conf          $PKG/etc/audiod/audiod.conf.new
+install -m 0644 $SRC/etc/audiod/stack.conf           $PKG/etc/audiod/stack.conf.new
+# rc.audiod shipped .new and NOT executable: admin runs `chmod +x` to enable.
+install -m 0644 $SRC/etc/rc.d/rc.audiod              $PKG/etc/rc.d/rc.audiod.new
+
+# --- docs ------------------------------------------------------------------
+mkdir -p $PKG/usr/doc/$PRGNAM-$VERSION
+install -m 0644 $SRC/README-audiod.md                $PKG/usr/doc/$PRGNAM-$VERSION/README.md 2>/dev/null || true
+cat $CWD/$PRGNAM.SlackBuild > $PKG/usr/doc/$PRGNAM-$VERSION/$PRGNAM.SlackBuild
+
+# --- package metadata ------------------------------------------------------
+mkdir -p $PKG/install
+cat $CWD/slack-desc > $PKG/install/slack-desc
+cat $CWD/doinst.sh  > $PKG/install/doinst.sh
+
+chown -R root:root $PKG
+cd $PKG
+# --- permission normalization (belt-and-suspenders) ---
+find . -type f \( -perm -4000 -o -perm -2000 \) -exec chmod -s {} +
+find . ! -type l -type d ! -perm 755 -exec chmod -f 755 {} +
+find . ! -type l -type f -perm /111 ! -perm 755 -exec chmod -f 755 {} +
+find . ! -type l -type f ! -perm /111 ! -perm 644 -exec chmod -f 644 {} +
+
+/sbin/makepkg -l y -c n $OUTPUT/$PRGNAM-$VERSION-$ARCH-$BUILD$TAG.$PKGTYPE

@@ -1,0 +1,141 @@
+#!/bin/bash
+#
+# audiod -- audio session manager for Slackware (elogind-driven).
+#
+# A small system daemon, started at boot after elogind, that reacts to
+# elogind's org.freedesktop.login1 user-lifecycle signals and manages the
+# per-user PipeWire stack: ordered start on the user's first login
+# (UserNew), targeted teardown on their last logout (UserRemoved).
+#
+# It is the "systemd --user for audio" that Slackware lacks -- built from
+# elogind + libslack daemon(1) + shell, no systemd, no extra service manager.
+#
+# Runs in the foreground; /etc/rc.d/rc.audiod backgrounds and supervises it.
+
+LIB=/usr/libexec/audiod/audiod-lib.sh
+. "$LIB" || { echo "audiod: cannot source $LIB" >&2; exit 1; }
+load_config
+
+GDBUS_PID=""
+cleanup() { [ -n "$GDBUS_PID" ] && kill "$GDBUS_PID" 2>/dev/null; exit 0; }
+trap cleanup TERM INT
+
+# --- wait for elogind's login1 to be answering -----------------------------
+wait_for_login1() {                       # wait_for_login1 <timeout_s>
+    local timeout="${1:-30}" i=0 max=$(( ${1:-30} * 2 ))
+    while [ "$i" -lt "$max" ]; do
+        gdbus call -y -d org.freedesktop.login1 -o /org/freedesktop/login1 \
+            -m org.freedesktop.login1.Manager.ListUsers >/dev/null 2>&1 \
+            && return 0
+        sleep 0.5; i=$((i + 1))
+    done
+    return 1
+}
+
+# --- gate: is this a real local seated user session? ------------------------
+session_prop() { loginctl show-session "$1" -p "$2" 2>/dev/null \
+                     | sed -n "s/^$2=//p"; }
+
+wait_for_seat_session() {                 # wait_for_seat_session <uid> <to_s>
+    local uid="$1" timeout="$2" i=0 max=$(( ${2:-5} * 4 ))
+    local sessions sid seat class remote
+    while [ "$i" -le "$max" ]; do
+        sessions=$(loginctl show-user "$uid" 2>/dev/null | sed -n 's/^Sessions=//p')
+        for sid in $sessions; do
+            seat=$(session_prop "$sid" Seat)
+            class=$(session_prop "$sid" Class)
+            remote=$(session_prop "$sid" Remote)
+            if [ -n "$seat" ] && [ "$class" = user ] && [ "$remote" = no ]; then
+                return 0
+            fi
+        done
+        sleep 0.25; i=$((i + 1))
+    done
+    return 1
+}
+
+group_warn() {                            # soft check, never blocks
+    local uid="$1" u grps; u=$(user_for "$uid"); grps=$(id -nG "$u" 2>/dev/null)
+    case " $grps " in
+        *" audio "*|*" video "*) : ;;
+        *) log "note: uid $uid ($u) not in audio/video group; relying on elogind uaccess ACLs" ;;
+    esac
+}
+
+# --- event handlers ---------------------------------------------------------
+handle_user_new() {
+    local uid="$1"
+    [ "$uid" -ge 1000 ] 2>/dev/null || { dbg "skip system uid $uid"; return 0; }
+    if ! wait_for_seat_session "$uid" "${SEAT_WAIT:-5}"; then
+        dbg "uid $uid: no local seat session; skipping"; return 0
+    fi
+    group_warn "$uid"
+    log "user $uid logged in (first session) -> starting audio stack"
+    start_stack "$uid"
+}
+
+handle_user_removed() {
+    local uid="$1"
+    [ "$uid" -ge 1000 ] 2>/dev/null || return 0
+    log "user $uid logged out (last session) -> tearing down audio stack"
+    stop_stack "$uid"
+}
+
+dispatch() {                              # dispatch <signal-line>
+    case "$1" in
+        *Manager.UserNew*)
+            local uid
+            uid=$(printf '%s\n' "$1" | sed -n 's/.*UserNew (uint32 \([0-9]\{1,\}\).*/\1/p')
+            [ -n "$uid" ] && handle_user_new "$uid" &
+            ;;
+        *Manager.UserRemoved*)
+            local uid
+            uid=$(printf '%s\n' "$1" | sed -n 's/.*UserRemoved (uint32 \([0-9]\{1,\}\).*/\1/p')
+            [ -n "$uid" ] && handle_user_removed "$uid" &
+            ;;
+    esac
+}
+
+# --- cold start: adopt users already logged in ------------------------------
+reconcile() {
+    log "reconciling users already present"
+    local uid rest
+    while read -r uid rest; do
+        [ -n "$uid" ] || continue
+        case "$uid" in *[!0-9]*) continue ;; esac
+        handle_user_new "$uid"
+    done < <(loginctl list-users --no-legend 2>/dev/null)
+}
+
+# --- main loop --------------------------------------------------------------
+monitor_loop() {
+    local line
+    while :; do
+        log "connecting to login1 signal stream"
+        exec 3< <(stdbuf -oL gdbus monitor -y -d org.freedesktop.login1 2>/dev/null)
+        GDBUS_PID=$!
+        while IFS= read -r line <&3; do
+            dispatch "$line"
+        done
+        exec 3<&-
+        GDBUS_PID=""
+        log "signal stream ended; reconnecting in 2s"
+        sleep 2
+    done
+}
+
+# ---------------------------------------------------------------------------
+log "audiod starting (pid $$)"
+
+if ! wait_for_login1 30; then
+    log "elogind login1 not available after 30s; exiting"
+    exit 1
+fi
+
+if ! is_pipewire_mode; then
+    log "system is in PulseAudio mode (AUDIO_SERVER); audiod idle, exiting"
+    exit 0
+fi
+
+reconcile
+monitor_loop
