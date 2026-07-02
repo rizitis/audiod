@@ -11,19 +11,16 @@ config() {
   # Otherwise, we leave the .new copy for the admin to consider...
 }
 
-preserve_perms() {
-  NEW="$1"
-  OLD="$(dirname $NEW)/$(basename $NEW .new)"
-  if [ -e $OLD ]; then
-    cp -a $OLD ${NEW}.incoming
-    cat $NEW > ${NEW}.incoming
-    mv ${NEW}.incoming $NEW
-  fi
-  config $NEW
-}
-
-# rc.audiod: keep the admin's on/off (execute-bit) state across upgrades.
-preserve_perms etc/rc.d/rc.audiod.new
+# rc.audiod: the execute bit is the admin's on/off switch. Preserve it across
+# upgrades: note whether the currently-installed rc is executable, run the
+# normal config() handling, then restore the execute bit if it was set.
+RC=etc/rc.d/rc.audiod
+RC_WAS_ON=no
+[ -x "$RC" ] && RC_WAS_ON=yes
+config "$RC.new"
+if [ "$RC_WAS_ON" = yes ] && [ -f "$RC" ]; then
+  chmod +x "$RC"
+fi
 
 # Config files: never clobber local edits.
 config etc/audiod/audiod.conf.new

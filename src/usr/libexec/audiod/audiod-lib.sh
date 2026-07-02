@@ -38,21 +38,36 @@ gid_for()  { getent passwd "$1" | cut -d: -f4; }
 home_for() { getent passwd "$1" | cut -d: -f6; }
 rundir_for() { echo "$(home_for "$1")/.run"; }
 
-# --- audio-server mode (respect Patrick's switch) ---------------------------
+# --- audio-server mode (respect Slackware's switch) -------------------------
 # return 0 = PipeWire mode (manage), 1 = PulseAudio mode (stand down)
+#
+# Slackware's pipewire-enable.sh / pipewire-disable.sh flip the audio server by
+# renaming the XDG autostart entries. In PulseAudio mode, pulseaudio.desktop is
+# active and pipewire.desktop has been renamed to pipewire.desktop.sample. That
+# rename is the authoritative switch, so we read it directly. (Our own takeover
+# only appends Hidden=true to pipewire.desktop, it never renames it, so a
+# taken-over PipeWire system still has pipewire.desktop present.)
 is_pipewire_mode() {
+    local ad="${AUDIOD_AUTOSTART_DIR:-/etc/xdg/autostart}"
     case "$AUDIO_SERVER" in
         pipewire) return 0 ;;
         pulse)    return 1 ;;
     esac
-    # auto:
-    [ -x /usr/bin/pulseaudio ] || return 0            # no pulse -> pipewire
-    [ -r /etc/pulse/client.conf ] || return 0
-    if grep -Eq '^[[:space:]]*autospawn[[:space:]]*=[[:space:]]*yes' \
-         /etc/pulse/client.conf; then
-        return 1                                       # pulse autospawn on
+    # no pulse installed at all -> always PipeWire
+    [ -x /usr/bin/pulseaudio ] || return 0
+
+    # authoritative: pulseaudio autostart active AND pipewire autostart sampled out
+    if [ -e "$ad/pulseaudio.desktop" ] && [ ! -e "$ad/pipewire.desktop" ]; then
+        return 1                                       # PulseAudio mode
     fi
-    return 0
+
+    # secondary hint: client.conf autospawn (also set by the switch scripts)
+    if [ -r /etc/pulse/client.conf ] && \
+       grep -Eq '^[[:space:]]*autospawn[[:space:]]*=[[:space:]]*yes' \
+            /etc/pulse/client.conf; then
+        return 1                                       # PulseAudio autospawn on
+    fi
+    return 0                                            # PipeWire mode
 }
 
 # --- run a command as the target user --------------------------------------

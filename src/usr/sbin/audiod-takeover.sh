@@ -12,6 +12,22 @@ if [ ! -x /usr/bin/pipewire ]; then
     echo "error: /usr/bin/pipewire not found; nothing to do." >&2; exit 1
 fi
 
+# Refuse on a PulseAudio system: disabling the PipeWire starters while the
+# machine is in Pulse mode (audiod stands down there) would leave NOTHING
+# starting audio -> silence. Switch to PipeWire first. We reuse audiod's own
+# mode detection so there is a single source of truth.
+if [ -r /usr/libexec/audiod/audiod-lib.sh ]; then
+    . /usr/libexec/audiod/audiod-lib.sh
+    load_config
+    if ! is_pipewire_mode; then
+        echo "error: system is in PulseAudio mode." >&2
+        echo "audiod manages PipeWire only; running takeover now would leave" >&2
+        echo "no starter and thus no sound. Switch to PipeWire first" >&2
+        echo "(e.g. Slackware's pipewire-enable.sh), then re-run takeover." >&2
+        exit 1
+    fi
+fi
+
 echo "Disabling console profile.d starters (Slackware sources only +x files):"
 for f in /etc/profile.d/pipewire.sh /etc/profile.d/pipewire.csh; do
     [ -f "$f" ] && chmod -x "$f" && echo "  chmod -x $f"
