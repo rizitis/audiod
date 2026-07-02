@@ -319,4 +319,4 @@ may remain as harmless leftovers.
 
 ---
 
-*Built for Slackware-current. elogind unmodified; no systemd, no dinit.*
+*Built for Slackware-current. elogind unmodified; no systemd.*
