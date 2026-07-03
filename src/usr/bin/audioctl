@@ -30,6 +30,19 @@ EOF
 # Respect the same gate as audiod (agreed: option B -- consistent policy).
 if ! is_pipewire_mode; then
     echo "System is in PulseAudio mode; PipeWire management is inactive."
+    # The switch says Pulse, but PipeWire daemons may still be running (e.g.
+    # right after pipewire-disable.sh, before a reboot or a manual stop). Report
+    # that honestly so the state isn't mistaken for "Pulse is actually serving".
+    still=$(stack_running_names "$UID_" 2>/dev/null | tr '\n' ' ')
+    if [ -n "${still# }" ]; then
+        echo
+        echo "Note: PipeWire is still running for $ME:  $still"
+        echo "The switch changed but these were not stopped. They will go away"
+        echo "on the next reboot, or you can stop them now (as $ME) by pasting:"
+        echo
+        echo "    for s in pipewire-pulse wireplumber pipewire dbus; do daemon --pidfiles=~/.run --name=\$s --stop; done"
+    fi
+    echo
     echo "Switch with Slackware's pipewire-enable.sh (or set AUDIO_SERVER in"
     echo "/etc/audiod/audiod.conf) to use PipeWire."
     exit 1

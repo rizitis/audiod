@@ -11,8 +11,8 @@
 #     "kill everything in ~/.run" -- that directory holds unrelated pidfiles.
 #   * Privilege drop root->user is setpriv (no PAM, no new elogind session).
 
-AUDIOD_CONF=/etc/audiod/audiod.conf
-AUDIOD_STACK=/etc/audiod/stack.conf
+AUDIOD_CONF=${AUDIOD_CONF:-/etc/audiod/audiod.conf}
+AUDIOD_STACK=${AUDIOD_STACK:-/etc/audiod/stack.conf}
 
 load_config() {
     # defaults
@@ -249,6 +249,17 @@ status_stack() {            # status_stack <uid>
         else
             printf '  %-15s : stopped\n' "$name"
         fi
+    done < "$AUDIOD_STACK"
+}
+
+# echoes the names of any stack services (incl. dbus) actually running for uid;
+# used to warn when the switch says Pulse but PipeWire is still up.
+stack_running_names() {     # stack_running_names <uid>
+    local uid="$1" name bin ready
+    service_running "$uid" dbus && echo dbus
+    while read -r name bin ready _; do
+        case "$name" in ''|\#*) continue ;; esac
+        service_running "$uid" "$name" && echo "$name"
     done < "$AUDIOD_STACK"
 }
 
