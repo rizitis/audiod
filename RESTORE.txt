@@ -5,3 +5,6 @@ exit 0
 chmod -x /etc/rc.d/rc.audiod  # μη ξεκινήσει στο επόμενο boot
 /usr/sbin/audiod-restore.sh   # ξαναενεργοποίησε τους stock starters
 reboot                        # καθαρή εκκίνηση, ήχος όπως πριν το audiod
+
+ΝΟΤΕ: The -d suffix is ​​correct, it's daemon. The "server vs manager" distinction is subtle; a manager daemon is also entitled to the -d.
+:)
