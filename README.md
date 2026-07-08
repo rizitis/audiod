@@ -31,6 +31,7 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
 12. [Troubleshooting](#troubleshooting)
 13. [Design notes & rationale](#design-notes--rationale)
 14. [Scope, limitations & known behaviour](#scope-limitations--known-behaviour)
+15. [Party hub mode (optional)](#party-hub-mode-optional)
 
 ---
 
@@ -316,6 +317,53 @@ may remain as harmless leftovers.
   is picked up depends on how it is launched.
 * **Kernel/hardware-level enumeration delays** are outside audiod's control;
   it makes WirePlumber wait correctly rather than time out.
+
+---
+
+*Built for Slackware-current. elogind unmodified; no systemd.*
+
+## Party hub mode (optional)
+
+`audiod` has an **optional** hub extension that turns the machine into a party
+audio hub. It is **off by default** (`HUB_MODE=no`) and, when off, changes
+nothing — `audiod` behaves exactly as described above. Turn it on only when you
+want the box to accept Bluetooth phones, take audio from trusted LAN machines,
+or mirror playback to several outputs.
+
+**Permissions are group-based.** Only members of the `HUB_GROUP` (default
+`audiohub`) get hub behaviour; every other user is ignored entirely, so hub
+mode never touches non-members' sessions. The hub runs **per-user** for each
+logged-in member.
+
+```sh
+groupadd audiohub                 # once
+gpasswd -a <user> audiohub        # add each member
+# in /etc/audiod/audiod.conf:  HUB_MODE=yes
+```
+
+**Bluetooth is shared.** The machine has a single, system-wide adapter
+(managed by `bluetoothd`), so all members share it: any member can open a
+pairing window, and already-paired phones reconnect regardless of who is logged
+in. Pairing is **on-demand and bounded** — `audioctl hub pair` makes the box
+discoverable for a short window (default 120s) that you trigger, and pairing
+still requires the normal BlueZ **PIN/confirmation**. There is no blind
+auto-accept, and the box is not left discoverable permanently.
+
+**Network audio is deny-by-default and per-user.** `NET_TCP=yes` alone does
+nothing; you must also list explicit addresses in `NET_ACL` (e.g.
+`192.168.1.0/24`). Anyone allowed in can also see that user's microphone and
+monitors, so only allow machines you trust.
+
+```sh
+audioctl hub status        # HUB_MODE, your membership, BT/net/combine state
+audioctl hub pair [secs]   # open a bounded Bluetooth pairing window
+audioctl hub net           # (re)apply network audio from the config
+audioctl hub combine       # create a combine sink (mirror to many outputs)
+```
+
+`audiod` still does **not** manage system services: `bluetoothd` must already
+be running and the adapter powered (an rc.d concern). See `README-hub.md` for
+the full configuration reference and security notes.
 
 ---
 

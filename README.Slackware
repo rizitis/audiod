@@ -1,0 +1,23 @@
+exit 0
+
+For the pipewire version 0.1.0 of audiod you only need this in /etc/rc.d/rc.local
+# Start the audio session manager (needs elogind up first)
+if [ -x /etc/rc.d/rc.audiod ]; then
+  /etc/rc.d/rc.audiod start
+fi
+
+---
+
+For the full Hub version >= 0.2.0 you need ^^ and be sure for these:
+activated on /etc/audiod/audiod.conf --> HUB_MODE=yes
+add user_name that will be the owner HUB_OWNER=user_name (if empty will be the first who login)
+
+# create the group and add users
+groupadd audiohub
+gpasswd -a user_name audiohub
+
+#Usage:
+audioctl hub status
+audioctl hub pair
+
+If you only want the pipewire fix you can disable all above^^

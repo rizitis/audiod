@@ -1,0 +1,77 @@
+# /etc/audiod/audiod.conf  --  configuration for audiod (the audio session manager)
+#
+# ============================  GAMER / PARTY PRESET  ========================
+# This is a ready-to-go config for a gaming / party box: the audio hub is ON,
+# Bluetooth works out of the box, and playback is mirrored to EVERY output at
+# once (built-in speakers + all HDMI + any Bluetooth speaker) so sound fills the
+# room and your HDMI monitor/TV/AV receiver gets it too.
+#
+# Don't want something? Flip it back to the conservative default noted next to
+# each key. All hub controls also work live via 'audioctl hub ...'.
+# ===========================================================================
+
+# --- core audiod (unchanged from stock) -----------------------------------
+
+# Which audio server this system uses. auto = detect PipeWire vs PulseAudio.
+AUDIO_SERVER=auto
+
+# Manage a per-user D-Bus session bus. no = desktops bring their own (default).
+MANAGE_DBUS=no
+
+# When MANAGE_DBUS=yes: seconds to wait for a desktop bus before spawning one.
+BUS_WAIT=3
+
+# Verbose logging to syslog (tag: audiod) and stderr in the foreground.
+DEBUG=no
+
+# Seconds to wait at login for a valid seat session before deciding not-seated.
+SEAT_WAIT=5
+
+# Seconds to wait for the PipeWire socket before starting dependent services.
+PIPEWIRE_WAIT=10
+
+# =========================================================================
+#  PARTY HUB MODE  (turned ON in this gamer preset)
+# =========================================================================
+# Phones pair and play through this box, trusted LAN machines can stream to it,
+# and playback can mirror to several outputs at once.
+#
+#  SECURITY: Bluetooth pairing is only offered in a short window YOU trigger
+#  ('audioctl hub pair'), and still needs the normal PIN/confirmation -- there
+#  is no blind auto-accept. Network audio stays OFF unless you set NET_TCP=yes
+#  AND list explicit addresses in NET_ACL. Never widen NET_ACL to the internet.
+
+# Hub on. (Stock default: no.)
+HUB_MODE=yes
+
+# Only members of this group get the hub. Create it and add yourself:
+#   groupadd audiohub ; gpasswd -a <you> audiohub    (then log in again)
+HUB_GROUP=audiohub
+
+# Owner of the card + Bluetooth. Empty = the first hub member to log in wins
+# (perfect for a single-user gaming box). Pin a username only if you want a
+# fixed owner regardless of login order.
+HUB_OWNER=
+
+# Length of the 'audioctl hub pair' Bluetooth pairing window, in seconds.
+BT_PAIR_SECONDS=120
+
+# --- network audio in (kept OFF; enable only for a trusted LAN) ------------
+# To let friends' laptops stream in: set NET_TCP=yes AND a real NET_ACL.
+# WARNING: allowed clients can also see this box's mic/monitors.
+NET_TCP=no
+NET_ACL=
+NET_PORT=4713
+
+# --- combine output: SOUND EVERYWHERE (ON in this gamer preset) ------------
+# Mirrors playback to ALL current sinks at once and makes that the default, so
+# built-in speakers + every HDMI output (monitor / TV / AV receiver) + any
+# Bluetooth speaker all play together. HDMI is included on purpose -- gamers
+# and AV setups want it.
+#
+# Prefer only some outputs? List them in COMBINE_SLAVES (comma-separated pactl
+# sink names), e.g.:
+#   COMBINE_SLAVES=alsa_output...HiFi__Speaker__sink,alsa_output...HDMI1__sink
+# Toggle live any time:  audioctl hub combine   /   audioctl hub combine off
+COMBINE=yes
+COMBINE_SLAVES=

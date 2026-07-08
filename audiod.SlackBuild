@@ -23,10 +23,17 @@
 cd $(dirname $0) ; CWD=$(pwd)
 
 PRGNAM=audiod
-VERSION=${VERSION:-0.1.0}
-BUILD=${BUILD:-7}
+VERSION=${VERSION:-0.2.0}
+BUILD=${BUILD:-8}
 TAG=${TAG:-_rtz}
 PKGTYPE=${PKGTYPE:-txz}
+
+# GAME=ON ships the ready-to-go gamer/party preset as the default config
+# (hub on, combine "sound everywhere" incl. HDMI). Anything else ships the
+# normal conservative config (everything off by default).
+#   bash audiod.SlackBuild            -> normal config
+#   GAME=ON bash audiod.SlackBuild    -> gamer/party preset config
+GAME=${GAME:-OFF}
 
 # noarch: shell only
 ARCH=noarch
@@ -69,8 +76,27 @@ chmod 0755 $PKG/usr/sbin/audiod \
 install -m 0644 $SRC/usr/libexec/audiod/audiod-lib.sh \
                                                      $PKG/usr/libexec/audiod/audiod-lib.sh
 
+# optional hub extension (sourced, NOT executable). Inert unless HUB_MODE=yes.
+if [ -f $SRC/usr/libexec/audiod/hub.sh ]; then
+  install -m 0644 $SRC/usr/libexec/audiod/hub.sh \
+                                                     $PKG/usr/libexec/audiod/hub.sh
+fi
+# hub BT auto-reconnect watcher (executable helper run under daemon(1))
+if [ -f $SRC/usr/libexec/audiod/hub-btwatch.sh ]; then
+  install -m 0755 $SRC/usr/libexec/audiod/hub-btwatch.sh \
+                                                     $PKG/usr/libexec/audiod/hub-btwatch.sh
+fi
+
 # config + rc as .new (doinst.sh installs/preserves them)
-install -m 0644 $SRC/etc/audiod/audiod.conf          $PKG/etc/audiod/audiod.conf.new
+# config + rc as .new (doinst.sh installs/preserves them)
+# GAME=ON installs the gamer/party preset instead of the normal config.
+# Both configs live in src/etc/audiod/ (audiod.conf and audiod.conf.gamer).
+if [ "$GAME" = "ON" ] && [ -f $SRC/etc/audiod/audiod.conf.gamer ]; then
+  echo "audiod.SlackBuild: GAME=ON -> installing gamer/party preset config"
+  install -m 0644 $SRC/etc/audiod/audiod.conf.gamer $PKG/etc/audiod/audiod.conf.new
+else
+  install -m 0644 $SRC/etc/audiod/audiod.conf       $PKG/etc/audiod/audiod.conf.new
+fi
 install -m 0644 $SRC/etc/audiod/stack.conf           $PKG/etc/audiod/stack.conf.new
 # rc.audiod shipped .new and NOT executable: admin runs `chmod +x` to enable.
 install -m 0644 $SRC/etc/rc.d/rc.audiod              $PKG/etc/rc.d/rc.audiod.new
@@ -78,6 +104,8 @@ install -m 0644 $SRC/etc/rc.d/rc.audiod              $PKG/etc/rc.d/rc.audiod.new
 # --- docs ------------------------------------------------------------------
 mkdir -p $PKG/usr/doc/$PRGNAM-$VERSION
 install -m 0644 $SRC/README-audiod.md                $PKG/usr/doc/$PRGNAM-$VERSION/README.md 2>/dev/null || true
+# hub docs, if present
+install -m 0644 $CWD/README-hub.md                   $PKG/usr/doc/$PRGNAM-$VERSION/README-hub.md 2>/dev/null || true
 cat $CWD/$PRGNAM.SlackBuild > $PKG/usr/doc/$PRGNAM-$VERSION/$PRGNAM.SlackBuild
 
 # --- package metadata ------------------------------------------------------

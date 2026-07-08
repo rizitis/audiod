@@ -16,6 +16,13 @@ LIB=/usr/libexec/audiod/audiod-lib.sh
 . "$LIB" || { echo "audiod: cannot source $LIB" >&2; exit 1; }
 load_config
 
+# Optional hub extension (party mode). Sourced always, but every function is a
+# no-op unless HUB_MODE=yes in audiod.conf, so build-7 behaviour is unchanged
+# when hub is off. Missing file is not fatal.
+HUB_LIB=/usr/libexec/audiod/hub.sh
+[ -r "$HUB_LIB" ] && . "$HUB_LIB"
+
+
 GDBUS_PID=""
 cleanup() { [ -n "$GDBUS_PID" ] && kill "$GDBUS_PID" 2>/dev/null; exit 0; }
 trap cleanup TERM INT
@@ -72,12 +79,15 @@ handle_user_new() {
     group_warn "$uid"
     log "user $uid logged in (first session) -> starting audio stack"
     start_stack "$uid"
+    # Optional party-hub extras (no-op unless HUB_MODE=yes).
+    type hub_start >/dev/null 2>&1 && hub_start "$uid"
 }
 
 handle_user_removed() {
     local uid="$1"
     [ "$uid" -ge 1000 ] 2>/dev/null || return 0
     log "user $uid logged out (last session) -> tearing down audio stack"
+    type hub_stop >/dev/null 2>&1 && hub_stop "$uid"
     stop_stack "$uid"
 }
 

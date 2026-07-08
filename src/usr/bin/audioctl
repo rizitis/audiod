@@ -10,6 +10,10 @@ LIB=/usr/libexec/audiod/audiod-lib.sh
 . "$LIB" || { echo "audioctl: cannot source $LIB" >&2; exit 1; }
 load_config
 
+# Optional hub extension (functions are no-ops unless HUB_MODE=yes).
+HUB_LIB=/usr/libexec/audiod/hub.sh
+[ -r "$HUB_LIB" ] && . "$HUB_LIB"
+
 UID_="$(id -u)"
 ME="$(id -un)"
 
@@ -65,6 +69,71 @@ case "${1:-}" in
         else
             stop_stack "$UID_"; sleep 1; start_stack "$UID_"
         fi
+        ;;
+    hub)
+        # party-hub controls; only meaningful when HUB_MODE=yes
+        if ! type hub_enabled >/dev/null 2>&1 || ! hub_enabled; then
+            echo "audioctl: hub mode is off (set HUB_MODE=yes in /etc/audiod/audiod.conf)"
+            exit 1
+        fi
+        # only members of HUB_GROUP may drive the hub
+        if ! hub_user_allowed "$UID_"; then
+            echo "audioctl: you ($ME) are not in group ${HUB_GROUP:-audiohub}; hub controls denied."
+            echo "  Ask an admin to add you:  gpasswd -a $ME ${HUB_GROUP:-audiohub}"
+            exit 1
+        fi
+        case "${2:-}" in
+            pair)
+                # open a bounded Bluetooth pairing window (default 120s)
+                hub_bt_pairing_window "$UID_" "${3:-}"
+                echo "Pairing window open. On your phone: pair with this box now."
+                echo "It closes automatically; pairing still needs the usual PIN/confirm."
+                ;;
+            reconnect)
+                # recover the shared BT device after another login stole it
+                if hub_bt_reconnect "$UID_"; then
+                    echo "Reconnected Bluetooth device(s) to you."
+                else
+                    echo "No Bluetooth device reconnected (none paired, or BT off)."
+                fi
+                ;;
+            play|pause|next|prev|previous|stop)
+                # AVRCP media control of the connected phone from the box
+                pcmd="${2}"; [ "$pcmd" = "prev" ] && pcmd="previous"
+                if printf 'menu player\n%s\n' "$pcmd" | bluetoothctl >/dev/null 2>&1; then
+                    echo "Sent '$pcmd' to the connected Bluetooth player."
+                else
+                    echo "Could not send '$pcmd' (no player connected?)."
+                fi
+                ;;
+            net)
+                hub_net_init "$UID_"
+                ;;
+            combine)
+                case "${3:-}" in
+                    off|stop|disable)
+                        hub_combine_off "$UID_"
+                        ;;
+                    *)
+                        hub_combine_init "$UID_"
+                        ;;
+                esac
+                ;;
+            status|'')
+                echo "hub status for $ME (uid $UID_):"
+                echo "  HUB_MODE : ${HUB_MODE:-no}"
+                echo "  HUB_GROUP: ${HUB_GROUP:-audiohub}"
+                echo "  HUB_OWNER: ${HUB_OWNER:-<auto: first login wins>}"
+                echo "  you      : $(hub_user_allowed "$UID_" && echo "member (allowed)" || echo "not a member (denied)"); $(hub_is_owner "$UID_" && echo "OWNER (holds card+BT)" || echo "guest (use audioshare to listen)")"
+                echo "  BT sink  : $(hub_bt_available 2>/dev/null && echo available || echo unavailable) (shared adapter)"
+                echo "  NET_TCP  : ${NET_TCP:-no} (ACL: ${NET_ACL:-<none>}, port ${NET_PORT:-4713})"
+                echo "  COMBINE  : ${COMBINE:-no}"
+                ;;
+            *)
+                echo "audioctl hub {pair [seconds]|reconnect|play|pause|next|prev|net|combine [off]|status}"
+                exit 1
+                ;;
+        esac
         ;;
     -h|--help|help|'')
         usage
