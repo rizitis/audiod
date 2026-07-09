@@ -1,11 +1,36 @@
 ## Worked example: two sources, every speaker at once
 
+![hub_combined in Plasma 6 KMix](combined.png)
+
+*The `hub_combined` sink shows up as an ordinary playback device in Plasma 6's
+KMix, alongside the physical outputs (HDMI ×3, Speaker, BT Speaker). Combine
+integrates cleanly with the native KDE mixer — each output keeps its own volume
+slider, so while music plays everywhere you can still trim each speaker
+independently (e.g. BT Speaker up, HDMI down) right from Plasma.*
+
+---
+
 Combine mode isn't just "send sound to more than one speaker" — it's a real
 **mixer**. Any number of independent sources are summed into one sink and that
 sink is mirrored to every output. Here is a live capture from a running party
 box (an **HP OMEN 16 laptop on Slackware64-current**), with the box playing
 **two different sources at the same time**: a phone over Bluetooth *and* Firefox
 running locally.
+
+---
+![hub_combined in Plasma 6 Volume App](orign.png)
+
+The everyday view: Plasma 6's Audio Volume applet. After audioctl hub combine,
+the hub_combined sink becomes the selected default output (the filled
+radio button), so everything the system plays is automatically sent through the
+mix to every speaker. Each output still has its own slider — here the built-in
+Speaker sits at 59%, hub_combined (the master of the mix) at 66%, and the
+distant BT Speaker is pushed to 153% via "Raise maximum volume" to balance
+the room. The Digital Microphone under Input Devices is muted and, as with
+combine generally, is never routed into the mix. No terminal needed to live with
+it: once the hub sink exists, it behaves like any other device in the native KDE
+audio menu.
+---
 
 ### Checking the hub state
 
