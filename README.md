@@ -1,4 +1,4 @@
-# audiod — an elogind-driven audio session manager for Slackware
+# audiod - an elogind-driven audio session manager for Slackware
 
 ---
 
