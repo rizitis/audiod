@@ -188,10 +188,10 @@ hub_scan_connect() {            # hub_scan_connect <uid> [scan_seconds]
     # if it's already connected, offer to disconnect instead (toggle)
     if hub_as_user "$uid" bluetoothctl -- info "$target" 2>/dev/null \
         | grep -q 'Connected: yes'; then
-        printf "%s is already connected. Disconnect it? [y/N] " "$tname"
+        printf "%s is already connected. Disconnect it? (type 'yes') " "$tname"
         local yn; read -r yn
         case "$yn" in
-            [Yy]*)
+            yes|YES|Yes)
                 if hub_as_user "$uid" bluetoothctl -- disconnect "$target" >/dev/null 2>&1; then
                     echo "Disconnected: $tname"
                 else
@@ -355,6 +355,28 @@ WPEOF
     fi
 }
 
+# Re-enable the bluez monitor for a user who is (now) the owner: move the guest
+# drop-in OUT of the conf.d directory if it's there, so WirePlumber stops seeing
+# it and loads the bluez monitor again. This undoes hub_guest_bt_off when a
+# former guest becomes owner (e.g. the previous owner logged out). No-op if the
+# drop-in isn't present. NOTE: emptying the file in place is NOT enough --
+# WirePlumber still parses a zero-byte drop-in and the monitor stays off -- so we
+# rename it out of conf.d (kept as .bak, not deleted).
+hub_guest_bt_on() {             # hub_guest_bt_on <uid>
+    local uid="$1" home
+    home=$(getent passwd "$uid" 2>/dev/null | cut -d: -f6)
+    [ -n "$home" ] && [ -d "$home" ] || return 0
+    local d="$home/.config/wireplumber/wireplumber.conf.d"
+    local f="$d/89-audiod-hub-no-bluez.conf"
+    [ -f "$f" ] || return 0
+    # move it out of conf.d so WirePlumber no longer reads it (no rm)
+    hub_as_user "$uid" mv -f "$f" "$d/../89-audiod-hub-no-bluez.conf.bak" 2>/dev/null
+    log "hub: uid $uid is owner; removed guest bluez-disable drop-in (bluez back on)"
+    hub_as_user "$uid" sh -c 'daemon --pidfiles=~/.run --name=wireplumber --stop' 2>/dev/null
+    sleep 0.4
+    hub_as_user "$uid" sh -c 'daemon -rB --pidfiles=~/.run --name=wireplumber -- /usr/bin/wireplumber' 2>/dev/null
+}
+
 # ---- Network audio (trusted LAN machines send to this box) -----------------
 #
 # OFF unless NET_TCP=yes AND NET_ACL lists explicit addresses. We never open to
@@ -481,6 +503,7 @@ hub_start() {                   # hub_start <uid>
 
     if hub_claim_owner "$uid"; then
         log "hub: uid $uid is the hub OWNER -> BT + card + per-user extras"
+        hub_guest_bt_on  "$uid"     # undo any leftover guest bluez-disable drop-in
         hub_bt_init      "$uid"     # owner holds the shared adapter
         hub_btwatch_start "$uid"    # auto-reconnect BT on VT-switch-back
         hub_net_init     "$uid"     # owner exposes network audio (if configured)
