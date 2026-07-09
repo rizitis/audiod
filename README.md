@@ -1,5 +1,16 @@
 # audiod — an elogind-driven audio session manager for Slackware
 
+---
+
+![audiod hub combine graph in coppwr](audiod.png)
+
+*The hub in coppwr's patch-bay view: a phone (HONOR 400 Pro) over Bluetooth and
+a local Firefox both feed the `hub_combined` sink, which mirrors the mix out to
+the built-in Speaker, all three HDMI outputs, and a Bluetooth speaker at once —
+zero xruns.*
+
+---
+
 `audiod` is the small piece that non-systemd Slackware has been missing for
 years: a **per-user audio session manager**. It gives the PipeWire stack the
 ordered startup, readiness gating, per-user lifecycle, and clean teardown that
