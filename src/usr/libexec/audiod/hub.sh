@@ -129,6 +129,92 @@ hub_bt_reconnect() {            # hub_bt_reconnect <uid>
     [ "$cnt" -gt 0 ]
 }
 
+# ---- interactive scan + connect (from the terminal) ------------------------
+#
+# Discover nearby Bluetooth devices (speakers AND phones), show a numbered list,
+# let the user pick one by number, and connect it -- so you don't need the
+# desktop's Bluetooth menu. Runs as the given uid so bluetoothctl uses the right
+# session.
+hub_scan_connect() {            # hub_scan_connect <uid> [scan_seconds]
+    hub_bt_available || { echo "Bluetooth adapter not available."; return 1; }
+    local uid="$1" secs="${2:-8}"
+
+    hub_as_user "$uid" bluetoothctl -- power on >/dev/null 2>&1
+
+    echo "Scanning for ${secs}s..."
+    # timed scan; bluetoothctl populates the device cache while it runs
+    hub_as_user "$uid" sh -c "bluetoothctl --timeout $secs scan on >/dev/null 2>&1"
+
+    # collect devices: lines look like 'Device <MAC> <name...>'
+    local macs=() names=() mac name
+    while read -r _ mac name; do
+        [ -n "$mac" ] || continue
+        case "$mac" in [0-9A-Fa-f][0-9A-Fa-f]:*) ;; *) continue ;; esac
+        macs+=("$mac"); names+=("${name:-$mac}")
+    done < <(hub_as_user "$uid" bluetoothctl -- devices 2>/dev/null)
+
+    if [ "${#macs[@]}" -eq 0 ]; then
+        echo "No devices found. Put the target in pairing/discoverable mode and retry."
+        return 1
+    fi
+
+    echo ""
+    echo "Found devices:"
+    local i info state
+    for i in "${!macs[@]}"; do
+        # figure out this device's state for a helpful label
+        info=$(hub_as_user "$uid" bluetoothctl -- info "${macs[$i]}" 2>/dev/null)
+        if printf '%s' "$info" | grep -q 'Connected: yes'; then
+            state="connected"
+        elif printf '%s' "$info" | grep -q 'Paired: yes'; then
+            state="paired"
+        else
+            state="new"
+        fi
+        printf "  %2d) %-24s [%s]  (%s)\n" \
+            "$((i+1))" "${names[$i]}" "${macs[$i]}" "$state"
+    done
+    echo ""
+    printf "Connect which number (Enter to cancel)? "
+    local choice; read -r choice
+    [ -n "$choice" ] || { echo "Cancelled."; return 0; }
+    case "$choice" in *[!0-9]*|'') echo "Not a number."; return 1 ;; esac
+    local idx=$((choice-1))
+    if [ "$idx" -lt 0 ] || [ "$idx" -ge "${#macs[@]}" ]; then
+        echo "Out of range."; return 1
+    fi
+
+    local target="${macs[$idx]}" tname="${names[$idx]}"
+    # if it's already connected, offer to disconnect instead (toggle)
+    if hub_as_user "$uid" bluetoothctl -- info "$target" 2>/dev/null \
+        | grep -q 'Connected: yes'; then
+        printf "%s is already connected. Disconnect it? [y/N] " "$tname"
+        local yn; read -r yn
+        case "$yn" in
+            [Yy]*)
+                if hub_as_user "$uid" bluetoothctl -- disconnect "$target" >/dev/null 2>&1; then
+                    echo "Disconnected: $tname"
+                else
+                    echo "Could not disconnect $tname."
+                    return 1
+                fi
+                ;;
+            *) echo "Left connected." ;;
+        esac
+        return 0
+    fi
+
+    echo "Connecting to $tname [$target] ..."
+    hub_as_user "$uid" bluetoothctl -- pair    "$target" >/dev/null 2>&1
+    hub_as_user "$uid" bluetoothctl -- trust   "$target" >/dev/null 2>&1
+    if hub_as_user "$uid" bluetoothctl -- connect "$target" >/dev/null 2>&1; then
+        echo "Connected: $tname"
+    else
+        echo "Could not connect. If it needs a PIN, run 'audioctl hub pair' first."
+        return 1
+    fi
+}
+
 # ---- BT auto-reconnect watcher (VT-switch-back recovery) -------------------
 #
 # Starts a per-owner background watcher (via daemon(1)) that reconnects the

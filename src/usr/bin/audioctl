@@ -106,6 +106,10 @@ case "${1:-}" in
                     echo "Could not send '$pcmd' (no player connected?)."
                 fi
                 ;;
+            scan)
+                # scan for nearby BT devices and connect one by number
+                hub_scan_connect "$UID_" "${3:-}"
+                ;;
             net)
                 hub_net_init "$UID_"
                 ;;
@@ -130,7 +134,7 @@ case "${1:-}" in
                 echo "  COMBINE  : ${COMBINE:-no}"
                 ;;
             *)
-                echo "audioctl hub {pair [seconds]|reconnect|play|pause|next|prev|net|combine [off]|status}"
+                echo "audioctl hub {pair [seconds]|scan [seconds]|reconnect|play|pause|next|prev|net|combine [off]|status}"
                 exit 1
                 ;;
         esac

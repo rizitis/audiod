@@ -3,7 +3,7 @@
 This guide covers everything a gamer needs to know about `audiod` hub mode on a
 Slackware machine: what it does, how to set it up, and every command you'll use.
 
-`audiod` is a per-user audio session manager for non-systemd Slackware. Its
+`audiod` is a per-user audio session manager for  Slackware. Its
 **hub mode** turns your gaming rig into an audio hub: friends pair their phones
 over Bluetooth and their music plays through your speakers, sound mirrors to
 every output at once (speakers + your HDMI monitor/TV + Bluetooth speakers), and
@@ -37,7 +37,7 @@ you control playback from your keyboard without touching anyone's phone.
 * `bluez` (BlueZ 5.x) installed, `bluetoothd` running, and a Bluetooth adapter.
   Check with: `bluetoothctl show` (should list a Controller, `Powered: yes`).
 * `psmisc` (for `fuser`) — part of the Slackware base.
-* PipeWire (`pipewire`, `wireplumber`, `pipewire-pulse`).
+* PipeWire (`pipewire`, `wireplumber`, `pipewire-pulse`) part of the Slackware.
 
 `audiod` does not manage system services. Make sure `bluetoothd` starts at boot
 (`chmod +x /etc/rc.d/rc.bluetooth`) — that's a system concern, not audiod's.
@@ -52,7 +52,7 @@ The SlackBuild ships a ready-to-go gamer config when you pass `GAME=ON`:
 
 ```sh
 GAME=ON bash audiod.SlackBuild
-sudo upgradepkg --install-new /tmp/audiod-0.2.0-noarch-8_rtz.txz
+sudo upgradepkg --install-new /tmp/audiod-0.2.2-noarch-1_rtz.txz
 ```
 
 This installs a config with hub mode **on** and combine (sound everywhere)
@@ -62,7 +62,7 @@ This installs a config with hub mode **on** and combine (sound everywhere)
 
 ```sh
 bash audiod.SlackBuild
-sudo upgradepkg --install-new /tmp/audiod-0.2.0-noarch-8_rtz.txz
+sudo upgradepkg --install-new /tmp/audiod-0.2.2-noarch-1_rtz.txz
 # then edit /etc/audiod/audiod.conf and set HUB_MODE=yes (and COMBINE=yes)
 ```
 
@@ -93,8 +93,11 @@ HUB_MODE=yes
 
 ```sh
 sudo chmod +x /etc/rc.d/rc.audiod
-# add to /etc/rc.d/rc.local, after elogind is up:
-#   [ -x /etc/rc.d/rc.audiod ] && /etc/rc.d/rc.audiod start
+# add to /etc/rc.d/rc.local:
+# Start the audio session manager (needs elogind up first)
+if [ -x /etc/rc.d/rc.audiod ]; then
+  /etc/rc.d/rc.audiod start
+fi
 ```
 
 **4. Start it:**
@@ -121,7 +124,30 @@ audioctl hub status
 Shows hub mode, your group membership, whether you're the owner, and the state
 of Bluetooth / network / combine.
 
-### Bluetooth: pairing a phone
+### Bluetooth: scan and connect from the terminal
+
+```sh
+audioctl hub scan          # scan 8s, then pick a device by number
+audioctl hub scan 20       # ...or scan for 20s (catches more devices)
+```
+Shows a numbered list of nearby devices (speakers AND phones) with each one's
+state, and you connect by number — no desktop menu needed:
+
+```
+Found devices:
+   1) HONOR 400 Pro   [CC:62:...]  (connected)
+   2) BT Speaker      [41:42:...]  (paired)
+   3) Party JBL       [00:11:...]  (new)
+
+Connect which number (Enter to cancel)? 3
+Connecting to Party JBL [...] ...
+Connected: Party JBL
+```
+Pick a device that's already connected and it offers to disconnect it (type
+`yes` to confirm). Only devices actively advertising show up — a smartwatch
+already tied to a phone won't appear unless you put it in pairing mode.
+
+### Bluetooth: pairing a phone (first time, needs PIN)
 
 ```sh
 audioctl hub pair          # open a 120-second pairing window
@@ -148,8 +174,9 @@ phones block remote "play"; pause/next/prev usually work regardless.)
 ```sh
 audioctl hub reconnect
 ```
-If the phone's audio ever drops (e.g. after a lot of VT switching), this pulls
-it back to you. Normally you won't need it — the watcher handles reconnects.
+If the phone's audio ever drops (e.g. after a VT switch), this pulls it back to
+you. By default the box does not auto-reconnect on its own, so this is your
+one-command recovery.
 
 ### Sound everywhere (combine)
 
@@ -209,6 +236,9 @@ HUB_GROUP=audiohub       # only members of this group get the hub
 HUB_OWNER=               # empty = first login owns the card+BT; or pin a name
 BT_PAIR_SECONDS=120      # length of the 'audioctl hub pair' window
 
+HUB_BT_AUTORESUME=no     # reconnect BT when you switch back to your VT (off)
+HUB_BT_AUTOPLAY=no       # also send AVRCP play on reconnect (off; needs above)
+
 NET_TCP=no               # network audio in (off unless you set an ACL)
 NET_ACL=                 # required allow-list to enable it, e.g. 192.168.1.0/24
 NET_PORT=4713
@@ -228,9 +258,12 @@ Find the exact sink names with: `pactl list short sinks`.
 ## Good to know / gotchas
 
 * **VT switching + Bluetooth.** When you switch away from your session, the
-  Bluetooth stream is paused cleanly (no drone). When you switch back it
-  reconnects; depending on the phone you may need to tap play once (some phones
-  block remote resume). Plain speaker/HDMI audio is unaffected.
+  Bluetooth stream is stopped cleanly (no drone). By default nothing auto-starts
+  when you switch back — so the box never blares music on its own — and you
+  press play (or run `audioctl hub reconnect`) to resume. If you *want* it to
+  reconnect automatically on return, set `HUB_BT_AUTORESUME=yes` (and
+  `HUB_BT_AUTOPLAY=yes` to also resume playback). Plain speaker/HDMI audio is
+  unaffected either way.
 * **Media audio must be ON on the phone.** If a phone pairs but no sound comes
   through, check that "Media audio" is enabled for your box in the phone's
   Bluetooth device settings — that's the A2DP profile.
@@ -249,6 +282,7 @@ Find the exact sink names with: `pactl list short sinks`.
 
 ```
 audioctl hub status                 # what's going on
+audioctl hub scan [seconds]         # scan + connect/disconnect by number
 audioctl hub pair [seconds]         # pair a phone (PIN required)
 audioctl hub play|pause|next|prev   # control the phone from your keyboard
 audioctl hub reconnect              # pull Bluetooth back to you

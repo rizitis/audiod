@@ -1,0 +1,204 @@
+.\" audiod.8 -- manual page for the audiod session-manager daemon
+.\" Copyright 2026 Ioannis Anagnostakis
+.\" Licensed under the Apache License, Version 2.0
+.TH AUDIOD 8 "2026-01-01" "audiod 0.2.0" "System Administration"
+.SH NAME
+audiod \- elogind\-driven per\-user audio session manager for Slackware
+.SH SYNOPSIS
+.B /usr/sbin/audiod
+.PP
+.B /etc/rc.d/rc.audiod
+.RI { start | stop | restart | status }
+.SH DESCRIPTION
+.B audiod
+is a per\-user audio session manager for non\-systemd Slackware. It gives the
+PipeWire stack the ordered startup, readiness gating, per\-user lifecycle, and
+clean teardown that
+.B systemd \-\-user
+provides elsewhere, built entirely from elogind, libslack
+.BR daemon (1),
+and shell. elogind is used unmodified.
+.PP
+It watches elogind's
+.B org.freedesktop.login1
+D\-Bus interface for
+.B UserNew
+and
+.B UserRemoved
+signals. Because elogind reference\-counts a user's sessions,
+.B UserNew
+fires only on a user's first login and
+.B UserRemoved
+only on their last logout. On first login
+.B audiod
+starts
+.BR pipewire ,
+waits for its socket to appear, then starts
+.B wireplumber
+and
+.BR pipewire\-pulse ,
+each under a
+.B daemon \-rB
+supervisor. On last logout it tears the stack down, targeted by name. This
+fixes the long\-standing race where the stock scripts start dependent daemons
+before the PipeWire core is ready, causing delayed or muted audio.
+.PP
+.B audiod
+runs as a foreground root reactor. On start it reconciles users already
+logged in, then follows login1 signals via
+.BR "gdbus monitor" ,
+reconnecting if the stream drops. Services are launched as the target user via
+.B setpriv
+with a clean environment, so no second elogind session is opened.
+.SH OPTIONAL HUB MODE
+When
+.B HUB_MODE=yes
+in
+.IR /etc/audiod/audiod.conf ,
+.B audiod
+also runs an optional hub extension (sourced from
+.IR /usr/libexec/audiod/hub.sh )
+that turns the machine into a party audio hub: Bluetooth phones play through
+the box, playback can mirror to several outputs, and trusted LAN machines can
+stream in. Hub features are restricted to members of the hub group (default
+.BR audiohub ).
+The first hub member to log in becomes the owner of the shared sound card and
+Bluetooth adapter; a per\-owner watcher
+.RI ( hub\-btwatch.sh )
+stops Bluetooth cleanly across VT switches to prevent a speaker drone. With
+.B HUB_MODE=no
+(the default) none of this runs and behaviour is identical to the plain
+session manager. See
+.BR audioctl (1)
+for the user\-facing hub commands.
+.SH GATING
+A login is served only if elogind reports it as seated
+.RB ( Seat
+non\-empty),
+.BR Class=user ,
+and
+.BR Remote=no .
+Remote and greeter sessions are ignored. If the system is set to PulseAudio,
+or
+.B AUDIO_SERVER=pulse
+is configured,
+.B audiod
+stands down entirely.
+.SH ENABLING
+.B audiod
+changes how PipeWire starts, so the stock autostart must be disabled first
+(this does not switch to PulseAudio):
+.PP
+.RS
+.EX
+/usr/sbin/audiod\-takeover.sh
+.EE
+.RE
+.PP
+Then enable the service so it starts after elogind:
+.PP
+.RS
+.EX
+chmod +x /etc/rc.d/rc.audiod
+# in /etc/rc.d/rc.local, after elogind:
+[ \-x /etc/rc.d/rc.audiod ] && /etc/rc.d/rc.audiod start
+.EE
+.RE
+.PP
+To restore the stock start mechanism, run
+.BR audiod\-restore.sh .
+Note that upgrading the
+.B pipewire
+package may re\-enable the stock
+.IR profile.d/pipewire.sh ;
+re\-run
+.B audiod\-takeover.sh
+if needed.
+.SH FILES
+.TP
+.I /usr/sbin/audiod
+The reactor.
+.TP
+.I /usr/bin/audioctl
+User control tool; see
+.BR audioctl (1).
+.TP
+.I /usr/libexec/audiod/audiod\-lib.sh
+Shared logic (gate, detection, stack ops).
+.TP
+.I /usr/libexec/audiod/hub.sh
+Optional hub logic (sourced; inert unless HUB_MODE=yes).
+.TP
+.I /usr/libexec/audiod/hub\-btwatch.sh
+Per\-owner Bluetooth VT\-switch watcher.
+.TP
+.I /etc/audiod/audiod.conf
+Configuration.
+.TP
+.I /etc/audiod/stack.conf
+Ordered service list.
+.TP
+.I /etc/rc.d/rc.audiod
+Init script (mode 0644 = off until enabled).
+.TP
+.I /run/audiod.pid
+Reactor pidfile.
+.TP
+.I /run/audiod\-hub\-owner
+Hub owner state (cleared on reboot).
+.SH CONFIGURATION
+Key settings in
+.IR /etc/audiod/audiod.conf :
+.B AUDIO_SERVER
+(auto/pipewire/pulse),
+.B MANAGE_DBUS
+(spawn a session bus for bus\-less logins),
+.BR BUS_WAIT ,
+.BR SEAT_WAIT ,
+.BR PIPEWIRE_WAIT ,
+.BR DEBUG .
+Hub keys:
+.BR HUB_MODE ,
+.BR HUB_GROUP ,
+.BR HUB_OWNER ,
+.BR HUB_BT_AUTORESUME ,
+.BR HUB_BT_AUTOPLAY ,
+.BR COMBINE ,
+.BR COMBINE_SLAVES ,
+.BR NET_TCP ,
+.BR NET_ACL ,
+.BR NET_PORT .
+.SH REQUIREMENTS
+elogind exposing the login1 interface; psmisc
+.RB ( fuser );
+libslack
+.BR daemon (1);
+PipeWire; and
+.B pam_elogind
+in the login PAM stack. Hub mode additionally needs
+.B bluez
+with
+.B bluetoothd
+running.
+.SH LIMITATIONS
+Two different local users cannot share one sound card at once (a kernel/ALSA
+limit, identical under systemd); the inactive session falls back to Dummy
+Output. Kernel\-level device enumeration delays are outside its control. For
+cross\-user sharing over the network, see the separate
+.B audioshare
+project.
+.SH SEE ALSO
+.BR audioctl (1),
+.BR daemon (1),
+.BR elogind (8),
+.BR loginctl (1),
+.BR setpriv (1),
+.BR pipewire (1),
+.BR wireplumber (1)
+.PP
+Full documentation:
+.IR /usr/doc/audiod\-0.2.0/README.md .
+.SH AUTHOR
+Ioannis Anagnostakis, 2026.
+.SH LICENSE
+Apache License, Version 2.0.

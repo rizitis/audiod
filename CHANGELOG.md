@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 build 8 — Hub mode (party audio hub)
+## 0.2.x build — Hub mode (party audio hub)
 
 This release adds an optional **hub mode** that turns the machine into a party
 audio hub, on top of the existing per-user audio session manager. Hub mode is

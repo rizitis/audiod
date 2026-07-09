@@ -1,0 +1,172 @@
+.\" audioctl.1 -- manual page for the audiod user control tool
+.\" Copyright 2026 Ioannis Anagnostakis
+.\" Licensed under the Apache License, Version 2.0
+.TH AUDIOCTL 1 "2026-01-01" "audiod 0.2.0" "User Commands"
+.SH NAME
+audioctl \- control your own PipeWire audio stack, and the optional audio hub
+.SH SYNOPSIS
+.B audioctl
+.RI [ status | start | stop | restart " [" component ]]
+.br
+.B audioctl hub
+.RI { status | scan " [" seconds ]| pair " [" seconds ]| reconnect |\
+play | pause | next | prev | combine " [" off ]| net }
+.SH DESCRIPTION
+.B audioctl
+is the unprivileged companion to
+.BR audiod (8).
+It lets any user inspect and manage
+.I their own
+PipeWire stack (pipewire, wireplumber, pipewire\-pulse) without root and
+without logging out, wrapping the same libslack
+.BR daemon (1)
+supervisors that
+.B audiod
+uses.
+.PP
+It honours the same audio\-server gate as
+.BR audiod (8):
+if the system is configured for PulseAudio, or
+.B AUDIO_SERVER=pulse
+is set, it declines and does nothing.
+.PP
+The
+.B hub
+subcommand drives the optional party audio hub (Bluetooth speaker, combine
+output, network audio, media control). It is only meaningful when
+.B HUB_MODE=yes
+in
+.I /etc/audiod/audiod.conf
+and the invoking user is a member of the hub group (default
+.BR audiohub ).
+.SH COMMANDS
+.SS Stack control
+.TP
+.B status
+Show the state of your session bus and the three audio services.
+.TP
+.B start
+Start the stack in dependency order (pipewire, then wireplumber, then
+pipewire\-pulse), each behind a readiness gate.
+.TP
+.B stop
+Stop the stack, targeted by name.
+.TP
+.BR restart " [" \fIcomponent\fR ]
+Restart the whole stack, or a single named component (for example
+.BR wireplumber ).
+.SS Hub control
+.TP
+.B hub status
+Show hub mode, your group membership, whether you are the current owner, and
+the state of Bluetooth, network audio, and combine.
+.TP
+.BR "hub scan" " [" \fIseconds\fR ]
+Scan for nearby Bluetooth devices (speakers and phones) for
+.I seconds
+(default 8), print a numbered list annotated with each device's state
+.RB ( connected ,
+.BR paired ,
+.BR new ),
+and connect the one you pick by number. Choosing an already\-connected device
+offers to disconnect it instead (confirm by typing
+.BR yes ).
+Only devices that are actively advertising appear.
+.TP
+.BR "hub pair" " [" \fIseconds\fR ]
+Open a bounded, on\-demand pairing window (default 120s) during which the box
+is discoverable. Pairing still requires the normal BlueZ PIN/confirmation;
+there is no auto\-accept.
+.TP
+.B hub reconnect
+Reconnect paired Bluetooth device(s) to you. Manual recovery after a device
+was lost (for example following a VT switch).
+.TP
+.BR "hub play" | pause | next | prev
+Send an AVRCP media command to the connected phone, so you can control
+playback from the keyboard.
+.TP
+.BR "hub combine" " [" off ]
+Create a
+.B hub_combined
+sink that mirrors playback to several outputs at once (built\-in speakers,
+every HDMI output, and any Bluetooth speaker) and make it the default; with
+.B off
+remove it and restore a normal default sink.
+.TP
+.B hub net
+(Re)apply the network\-audio configuration. This is deny\-by\-default: it does
+nothing unless
+.B NET_TCP=yes
+and an explicit
+.B NET_ACL
+allow\-list are set.
+.SH FILES
+.TP
+.I /etc/audiod/audiod.conf
+Configuration, including the hub keys
+.RB ( HUB_MODE ,
+.BR HUB_GROUP ,
+.BR HUB_OWNER ,
+.BR HUB_BT_AUTORESUME ,
+.BR HUB_BT_AUTOPLAY ,
+.BR COMBINE ,
+.BR COMBINE_SLAVES ,
+.BR NET_TCP ,
+.BR NET_ACL ,
+.BR NET_PORT ).
+.TP
+.I /etc/audiod/stack.conf
+The ordered service list.
+.TP
+.I ~/.run/*.pid
+Per\-user pidfiles for the supervised services.
+.SH EXIT STATUS
+Returns 0 on success and non\-zero if a requested action fails (for example an
+out\-of\-range scan selection, or a failed Bluetooth connect).
+.SH EXAMPLES
+Restart a stuck audio stack without logging out:
+.PP
+.RS
+.EX
+audioctl restart
+.EE
+.RE
+.PP
+Scan for and connect a Bluetooth speaker from the terminal:
+.PP
+.RS
+.EX
+audioctl hub scan 15
+.EE
+.RE
+.PP
+Play the same music on all outputs at once:
+.PP
+.RS
+.EX
+audioctl hub combine
+.EE
+.RE
+.SH SECURITY
+Bluetooth pairing is bounded and PIN\-gated; the box is never left permanently
+discoverable. Network audio is deny\-by\-default and requires an explicit
+allow\-list; clients allowed in can also see that user's microphone and
+monitors, so only trusted machines should be listed. Only members of the hub
+group can use hub features.
+.SH SEE ALSO
+.BR audiod (8),
+.BR daemon (1),
+.BR bluetoothctl (1),
+.BR wpctl (1),
+.BR pactl (1),
+.BR loginctl (1)
+.PP
+Full documentation:
+.I /usr/doc/audiod\-0.2.0/README.md
+and
+.IR GAMER\-GUIDE.md .
+.SH AUTHOR
+Ioannis Anagnostakis, 2026.
+.SH LICENSE
+Apache License, Version 2.0.

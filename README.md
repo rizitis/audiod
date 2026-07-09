@@ -7,11 +7,18 @@ ordered startup, readiness gating, per-user lifecycle, and clean teardown that
 **elogind + libslack `daemon(1)` + shell**. No systemd. No dinit. No new
 service manager. elogind is used completely unmodified.
 
-It exists to fix a real, long-standing Slackware bug: after login, PipeWire
-sometimes takes seconds-to-minutes to produce sound, or comes up muted / as a
-"Dummy Output". That happens because the stock start scripts fire
-`wireplumber` and `pipewire-pulse` *before* the PipeWire core is ready and
-rely on retry/respawn to eventually converge — a race that some machines lose.
+~~It exists to fix a real, long-standing Slackware bug: after login, PipeWire~~
+~~sometimes takes seconds-to-minutes to produce sound, or comes up muted / as a~~
+~~"Dummy Output". That happens because the stock start scripts fire~~
+~~`wireplumber` and `pipewire-pulse` *before* the PipeWire core is ready and~~
+~~rely on retry/respawn to eventually converge — a race that some machines lose.~~
+(Fixed for slackware-current 8/7/26)
+
+On top of the core session manager, `audiod` has an **optional hub mode** that
+turns the machine into a party audio hub: Bluetooth phones play through the box,
+sound mirrors to every output at once, and you drive it all from the terminal.
+Hub mode is off by default and changes nothing until you turn it on — see
+[Party hub mode](#party-hub-mode-optional) and the companion `GAMER-GUIDE.md`.
 
 ---
 
@@ -82,11 +89,10 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
 * **It does not modify elogind.** No patches, no rebuild. It only *reads* from
   elogind's public D-Bus interface.
 
-* **It does not touch device/channel configuration.** It starts and stops
-  daemons; it never remaps channels, sets defaults, changes volumes, or edits
-  WirePlumber/PipeWire config. Swapped L/R channels, default-device selection,
-  Bluetooth codec/profile tuning, etc. are separate concerns (fix those in
-  WirePlumber/PipeWire drop-ins).
+* **It does not touch device/channel configuration** (in core mode). It starts
+  and stops daemons; it never remaps channels, sets defaults, changes volumes,
+  or edits WirePlumber/PipeWire config. (Hub mode, when explicitly enabled, does
+  create a combine sink and manage Bluetooth on request — but only then.)
 
 * **It does not fix kernel-level device enumeration.** If the ALSA driver
   itself takes minutes to expose the card, `audiod` cannot make the hardware
@@ -97,7 +103,8 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
   single card on one seat, only the active session gets the hardware; the
   other falls back to Dummy Output. This is a fundamental limitation of
   shared-seat audio and behaves identically under systemd — it is out of
-  scope.
+  scope. (For cross-user sharing over the network see the separate `audioshare`
+  project.)
 
 * **It does not manage system services** (bluetoothd, the system D-Bus bus,
   etc.). Those start at boot, before any login, and `audiod` relies on them
@@ -135,19 +142,24 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
 * **Shared library** (`/usr/libexec/audiod/audiod-lib.sh`): the gate,
   audio-server detection, bus detection, and stack operations — sourced by
   both `audiod` and `audioctl` so policy lives in one place.
+* **Hub library** (`/usr/libexec/audiod/hub.sh`): all optional hub logic,
+  sourced only, inert unless `HUB_MODE=yes`.
 * **Single source of truth** (`/etc/audiod/stack.conf`): the ordered service
   list, read by both tools.
 
 ## Requirements
 
 * **elogind** (any reasonably recent version that exposes the login1 D-Bus
-  interface with `UserNew`/`UserRemoved` — verified on **[257.16]**(https://forge.slackware.nl/rizitis/elogind-slackware) ).
+  interface with `UserNew`/`UserRemoved` — verified on
+  [257.16](https://forge.slackware.nl/rizitis/elogind-slackware)).
 * **psmisc** (provides `fuser`, used for the session-bus liveness check) —
   part of the Slackware base.
 * **libslack `daemon(1)`** — already used by Slackware's stock PipeWire scripts.
 * **PipeWire** (`pipewire`, `wireplumber`, `pipewire-pulse`) — the payload.
 * `pam_elogind` must be in the login PAM stacks (Slackware default), so that
   local logins create elogind sessions and `UserNew` fires.
+* **For hub mode only:** `bluez` (BlueZ 5.x) with `bluetoothd` running and a
+  powered adapter.
 
 ## Files installed
 
@@ -155,6 +167,8 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
 /usr/sbin/audiod                    root:root 0755  the reactor (system daemon)
 /usr/bin/audioctl                   root:root 0755  user control tool
 /usr/libexec/audiod/audiod-lib.sh   root:root 0644  shared logic (sourced)
+/usr/libexec/audiod/hub.sh          root:root 0644  hub logic (sourced, opt-in)
+/usr/libexec/audiod/hub-btwatch.sh  root:root 0755  hub BT VT-switch watcher
 /usr/sbin/audiod-takeover.sh        root:root 0755  disable stock autostart
 /usr/sbin/audiod-restore.sh         root:root 0755  re-enable stock autostart
 /etc/rc.d/rc.audiod                 root:root 0644  init script (0644 = OFF)
@@ -165,15 +179,22 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
 
 Runtime (not part of the package): `/run/audiod.pid` (root); and, owned by the
 user, `~/.run/{pipewire,wireplumber,pipewire-pulse,dbus}.pid` plus
-`/run/user/$uid/bus` if audiod spawns a bus.
+`/run/user/$uid/bus` if audiod spawns a bus. Hub mode also uses
+`/run/audiod-hub-owner` (auto-owner state, cleared on reboot).
 
 ## Build & install
 
-```
-As root
+```sh
 cd audiod
-bash audiod.SlackBuild          # produces /tmp/audiod-<ver>-noarch-<b>_rtz.txz
-installpkg /tmp/audiod-*.txz
+bash audiod.SlackBuild                # produces /tmp/audiod-<ver>-noarch-<b>_rtz.txz
+sudo installpkg /tmp/audiod-*.txz
+```
+
+To ship the ready-to-go gamer/party preset as the default config, build with
+`GAME=ON`:
+
+```sh
+GAME=ON bash audiod.SlackBuild        # installs the gamer preset (hub + combine on)
 ```
 
 The package is `noarch` (pure shell) and builds from the bundled `src/` tree
@@ -188,6 +209,11 @@ must be disabled first (this does **not** switch you to PulseAudio):
 sudo /usr/sbin/audiod-takeover.sh     # chmod -x profile.d/pipewire.{sh,csh}
                                       # + Hidden=true on the XDG autostart entries
 ```
+
+> Note: upgrading the `pipewire` package can reinstall an executable
+> `profile.d/pipewire.sh`. If you use `install-new`, your disabled copy is kept
+> and the new one arrives as `.new` (no conflict). If in doubt after a pipewire
+> upgrade, re-run `audiod-takeover.sh`.
 
 Try it in the foreground first (safe: stopping audiod does not stop audio):
 
@@ -212,7 +238,7 @@ Control it like any Slackware service:
 
 ## Configuration
 
-`/etc/audiod/audiod.conf`:
+`/etc/audiod/audiod.conf` — core keys:
 
 | Key            | Default | Meaning                                                        |
 |----------------|---------|----------------------------------------------------------------|
@@ -222,6 +248,9 @@ Control it like any Slackware service:
 | `SEAT_WAIT`    | `5`     | Seconds to wait at login for a valid seat session before deciding the login is not seated. |
 | `PIPEWIRE_WAIT`| `10`    | Seconds to wait for the PipeWire socket before starting dependent services. |
 | `DEBUG`        | `no`    | Verbose logging to syslog (tag `audiod`) and stderr in foreground. |
+
+Hub keys (all inert unless `HUB_MODE=yes`) are documented in
+[Party hub mode](#party-hub-mode-optional) below.
 
 `/etc/audiod/stack.conf` — the ordered stack (`name  binary  ready`), read by
 both `audiod` and `audioctl`. `ready = socket:<name>` waits for
@@ -242,6 +271,9 @@ audioctl restart wireplumber # restart a single component
 
 This is the easy, discoverable way to do "my sound is stuck, fix it" without a
 logout — it wraps the same `daemon(1)` supervisors the stock setup already uses.
+
+The `audioctl hub ...` subcommands are covered in
+[Party hub mode](#party-hub-mode-optional).
 
 ## Going back to PulseAudio
 
@@ -320,50 +352,140 @@ may remain as harmless leftovers.
 
 ---
 
-*Built for Slackware-current. elogind unmodified; no systemd.*
-
 ## Party hub mode (optional)
 
 `audiod` has an **optional** hub extension that turns the machine into a party
 audio hub. It is **off by default** (`HUB_MODE=no`) and, when off, changes
 nothing — `audiod` behaves exactly as described above. Turn it on only when you
 want the box to accept Bluetooth phones, take audio from trusted LAN machines,
-or mirror playback to several outputs.
+or mirror playback to several outputs. Gamers: see `GAMER-GUIDE.md` for a
+task-oriented walkthrough.
 
-**Permissions are group-based.** Only members of the `HUB_GROUP` (default
-`audiohub`) get hub behaviour; every other user is ignored entirely, so hub
-mode never touches non-members' sessions. The hub runs **per-user** for each
-logged-in member.
+### What it adds
+
+* **Bluetooth speaker.** Phones pair (with the normal PIN) and play through the
+  box's speakers, mixed by PipeWire. Paired phones are trusted so BlueZ
+  reconnects them on its own.
+* **Terminal scan + connect.** `audioctl hub scan` discovers nearby devices
+  (speakers *and* phones), shows a numbered list with each device's state
+  (connected / paired / new), and lets you connect — or disconnect — by number,
+  so you don't need the desktop's Bluetooth menu.
+* **Media control from the box.** `audioctl hub play|pause|next|prev` drives the
+  connected phone over AVRCP, so you can control music from the keyboard without
+  touching someone's phone.
+* **Combine output (sound everywhere).** Mirror playback to several outputs at
+  once — built-in speakers, every HDMI output, and any Bluetooth speaker — via a
+  `hub_combined` sink that becomes the default. HDMI is included on purpose
+  (gamers/AV setups want it).
+* **Network audio (optional).** Trusted LAN machines can stream to the box.
+* **VT-switch watcher.** Stops Bluetooth cleanly on VT switch so the speakers
+  never "drone"; opt-in auto-resume when you return.
+
+### Permissions: group-based, per-user
+
+Only members of `HUB_GROUP` (default `audiohub`) get hub behaviour; every other
+user is ignored entirely, so hub mode never touches non-members' sessions.
 
 ```sh
-groupadd audiohub                 # once
-gpasswd -a <user> audiohub        # add each member
+groupadd audiohub                 # once (Slackware: by hand)
+gpasswd -a <user> audiohub        # add each member, then re-login
 # in /etc/audiod/audiod.conf:  HUB_MODE=yes
 ```
 
-**Bluetooth is shared.** The machine has a single, system-wide adapter
-(managed by `bluetoothd`), so all members share it: any member can open a
-pairing window, and already-paired phones reconnect regardless of who is logged
-in. Pairing is **on-demand and bounded** — `audioctl hub pair` makes the box
+If the group doesn't exist, nobody is allowed (safe default). `audiohub` is just
+a permission label for the hub — it is **not** the system `audio` group.
+
+### Ownership (automatic)
+
+The card and the single system-wide Bluetooth adapter can only be held by one
+user at a time. The **first** hub member to log in automatically becomes the
+owner (recorded in `/run/audiod-hub-owner`, cleared on reboot); later members
+are kept from grabbing the shared adapter. You normally set nothing.
+`HUB_OWNER=<user>` is an optional override to pin ownership regardless of login
+order.
+
+### Bluetooth pairing & security
+
+Pairing is **on-demand and bounded** — `audioctl hub pair` makes the box
 discoverable for a short window (default 120s) that you trigger, and pairing
 still requires the normal BlueZ **PIN/confirmation**. There is no blind
 auto-accept, and the box is not left discoverable permanently.
 
-**Network audio is deny-by-default and per-user.** `NET_TCP=yes` alone does
-nothing; you must also list explicit addresses in `NET_ACL` (e.g.
-`192.168.1.0/24`). Anyone allowed in can also see that user's microphone and
-monitors, so only allow machines you trust.
+### VT switching and Bluetooth
 
-```sh
-audioctl hub status        # HUB_MODE, your membership, BT/net/combine state
-audioctl hub pair [secs]   # open a bounded Bluetooth pairing window
-audioctl hub net           # (re)apply network audio from the config
-audioctl hub combine       # create a combine sink (mirror to many outputs)
+Switching to another VT makes the owner's session inactive, and the card/BT
+handoff would otherwise cut the phone's A2DP stream mid-buffer — the speakers
+then repeat the last buffer as a loud drone. The per-owner watcher
+(`hub-btwatch.sh`) listens to elogind for active-session changes and, when the
+owner leaves the active VT, **pauses the phone and suspends the BT stream
+cleanly** so there is no drone. Plain speaker/HDMI audio is unaffected.
+
+Resuming when you switch back is **opt-in**, because auto-resume can make the box
+start music on its own:
+
+* `HUB_BT_AUTORESUME=no` — reconnect the phone on return (default `no`).
+* `HUB_BT_AUTOPLAY=no` — also send AVRCP play on reconnect (default `no`).
+
+With both `no`, you resume manually with `audioctl hub reconnect` or by pressing
+play. (Some phones block remote resume regardless.)
+
+### Network audio
+
+Deny-by-default and per-user. `NET_TCP=yes` alone does nothing; you must also
+list explicit addresses in `NET_ACL` (e.g. `192.168.1.0/24`). Anyone allowed in
+can also see that user's microphone and monitors, so only allow machines you
+trust.
+
+### Configuration (hub keys in `/etc/audiod/audiod.conf`)
+
+```
+HUB_MODE=no              # master switch; yes = enable hub
+HUB_GROUP=audiohub       # only members of this group get the hub
+HUB_OWNER=               # empty = first login wins; or pin a username
+BT_PAIR_SECONDS=120      # length of the 'audioctl hub pair' window
+
+HUB_BT_AUTORESUME=no     # reconnect BT when you switch back to your VT
+HUB_BT_AUTOPLAY=no       # also send AVRCP play on reconnect (needs AUTORESUME)
+
+NET_TCP=no               # network audio in (per-user)
+NET_ACL=                 # REQUIRED allow-list, e.g. 192.168.1.0/24 (empty=off)
+NET_PORT=4713
+
+COMBINE=no               # mirror playback to several outputs, made default sink
+COMBINE_SLAVES=          # empty = ALL sinks (Speaker+HDMI+BT); or a,b to restrict
 ```
 
-`audiod` still does **not** manage system services: `bluetoothd` must already
-be running and the adapter powered (an rc.d concern). See `README-hub.md` for
-the full configuration reference and security notes.
+### Usage
+
+`man audiod`, `man audiod`
+
+```
+audioctl hub status              # HUB_MODE, your role (owner/guest), BT/net/combine
+audioctl hub scan [seconds]      # scan + connect/disconnect a device by number
+audioctl hub pair [seconds]      # open a bounded Bluetooth pairing window (PIN)
+audioctl hub play|pause|next|prev  # control the connected phone (AVRCP)
+audioctl hub reconnect           # reconnect BT to you (manual recovery)
+audioctl hub combine [off]       # create (or remove) the combine sink
+audioctl hub net                 # (re)apply network audio from the config
+```
+
+### What it intentionally does NOT do
+
+* It does not leave Bluetooth discoverable permanently, and never auto-accepts
+  unknown devices (PIN/confirm always required).
+* It does not open network audio without an explicit allow-list.
+* It does not give non-members any hub access.
+* It does not manage bluetoothd or the system bus.
+* It does not make two different local users share one card at once (kernel/ALSA
+  limit; see the separate `audioshare` project for host+guests).
+
+### Known limitations
+
+* On VT switch, plain speaker/HDMI audio recovers on its own, but Bluetooth
+  resume is best-effort and can depend on the phone (some block remote play).
+* `audioctl hub scan` only finds devices that are actively advertising; a
+  smartwatch already bonded to a phone, for example, won't appear unless you put
+  it into pairing mode.
 
 ---
 
