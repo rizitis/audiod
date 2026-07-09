@@ -4,10 +4,19 @@
 
 ![audiod hub combine graph in coppwr](audiod.png)
 
-*The hub in coppwr's patch-bay view: a phone (HONOR 400 Pro) over Bluetooth and
-a local Firefox both feed the `hub_combined` sink, which mirrors the mix out to
-the built-in Speaker, all three HDMI outputs, and a Bluetooth speaker at once —
-zero xruns.*
+*The audiod party hub seen live in coppwr's patch-bay view (HP OMEN 16,
+Slackware64-current). Two independent sources — a HONOR 400 Pro phone over
+Bluetooth A2DP (bluez_input.CC_62_00_5C_54_9F) and a local Firefox — both
+feed the virtual hub_combined sink. PipeWire sums them once, and
+hub_combined mirrors the mix out to every output at the same time: the
+built-in Speaker, all three HDMI outputs, and a BT Speaker
+(bluez_output.41_42_E4_0C_EA_BB). Each mirror leg is its own
+output.hub_combined_* node. The capture devices — the HP Wide Vision HD
+Camera and the two microphones (Stereo and Digital) — are present in
+the graph but are deliberately not wired into hub_combined: combine mirrors
+playback only, so sending music everywhere never routes your microphone
+anywhere. The profiler on the right shows the whole graph running with
+essentially zero xruns — clean, glitch-free multi-source, multi-output audio.*
 
 ---
 
