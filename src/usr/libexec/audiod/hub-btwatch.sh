@@ -1,15 +1,18 @@
 #!/bin/bash
-# audiod hub -- Bluetooth auto-reconnect watcher.
+# audiod hub -- Bluetooth VT-switch watcher.
 #
-# The problem: on a VT switch away from the hub owner, the card handoff drops
-# the owner's Bluetooth audio (the phone shows Connected: no, or its A2DP stream
-# is gone). Plain speaker audio comes back on its own when the owner is active
-# again, but Bluetooth does not re-establish by itself.
+# On a VT switch away from the hub owner, the card handoff cuts the phone's A2DP
+# stream mid-buffer and the speakers repeat the last buffer as a loud "tractor"
+# drone. This watcher's JOB is to prevent that: when the owner leaves the active
+# VT it stops the Bluetooth stream CLEANLY (pause + suspend), so there is no
+# drone.
 #
-# This watcher listens to elogind for active-session changes on the seat and,
-# whenever the HUB OWNER becomes the active session again, reconnects their
-# paired Bluetooth device(s). It runs as the owner (started by the reactor via
-# daemon(1)) so bluetoothctl talks to the right session.
+# It does NOT auto-reconnect or auto-start music by default -- that starts
+# playback on its own, which is usually unwanted. Resume is OPT-IN:
+#   HUB_BT_AUTORESUME=yes   reconnect the phone when the owner returns
+#   HUB_BT_AUTOPLAY=yes     ...and also send AVRCP play (needs AUTORESUME=yes)
+# With both unset (the default) you just get the anti-drone behaviour, and you
+# resume manually with 'audioctl hub reconnect' / by pressing play on the phone.
 #
 # Argument: <owner-uid>
 
@@ -22,6 +25,7 @@ type load_config >/dev/null 2>&1 && load_config 2>/dev/null
 uid="${1:-}"
 [ -n "$uid" ] || { echo "hub-btwatch: no uid" >&2; exit 1; }
 
+uname_="$(id -un "$uid" 2>/dev/null)"
 seat="${XDG_SEAT:-seat0}"
 
 # uid of the user owning the seat's current ActiveSession
@@ -32,55 +36,41 @@ active_uid_of_seat() {
     loginctl show-session "$sess" -p User --value 2>/dev/null
 }
 
-reconnect_now() {
-    # small settle so uaccess ACLs and the card are back before we reconnect
-    sleep 1
-    if type hub_bt_reconnect >/dev/null 2>&1; then
-        hub_bt_reconnect "$uid" >/dev/null 2>&1
-    fi
-}
-
-# Owner is leaving (VT switch away). The A2DP stream is about to be cut when the
-# card handoff happens; if we let it be cut mid-buffer the speakers repeat the
-# last buffer as a loud "tractor" drone. So we stop it CLEANLY first: pause the
-# phone over AVRCP and suspend the BlueZ input node, so no garbage is left.
+# Owner is leaving the active VT. Stop Bluetooth CLEANLY so the speakers don't
+# drone: pause the phone (AVRCP) and suspend the BlueZ input node in PipeWire.
 suspend_bt() {
-    # pause the source (phone) so it stops sending, via AVRCP
-    su - "$(id -un "$uid" 2>/dev/null)" -c \
-        'printf "menu player\npause\n" | bluetoothctl' >/dev/null 2>&1
-    # suspend the bluez input node in PipeWire so the buffer is flushed cleanly
-    su - "$(id -un "$uid" 2>/dev/null)" -c '
+    su - "$uname_" -c 'printf "menu player\npause\n" | bluetoothctl' >/dev/null 2>&1
+    su - "$uname_" -c '
         for id in $(pw-cli ls Node 2>/dev/null \
                     | awk "/bluez_input/{print \$2}" | tr -d ,); do
             pw-cli s "$id" suspend 2>/dev/null
         done
-    ' >/dev/null 2>&1
-    # as a fallback, drop the ALSA/BT link by muting the bluez input stream
-    su - "$(id -un "$uid" 2>/dev/null)" -c '
         pactl list short sources 2>/dev/null | awk "/bluez/{print \$1}" | \
         while read -r s; do pactl suspend-source "$s" 1 2>/dev/null; done
     ' >/dev/null 2>&1
 }
 
-# Reconnect once at startup in case we were (re)started while already active.
-if [ "$(active_uid_of_seat)" = "$uid" ]; then
-    reconnect_now
-fi
+# Owner returned. Only act if the user opted in.
+resume_bt() {
+    [ "${HUB_BT_AUTORESUME:-no}" = "yes" ] || return 0
+    sleep 1
+    type hub_bt_reconnect >/dev/null 2>&1 && hub_bt_reconnect "$uid" >/dev/null 2>&1
+}
 
-# Event-driven: watch the seat object for ActiveSession property changes.
+# NOTE: we deliberately do NOTHING at startup -- no reconnect, no play. The box
+# should not start music by itself on boot/login.
+
+# Event-driven: watch the seat for ActiveSession changes.
 gdbus monitor --system \
     --dest org.freedesktop.login1 \
     --object-path "/org/freedesktop/login1/seat/$seat" 2>/dev/null | \
 while read -r line; do
     case "$line" in
         *ActiveSession*)
-            # the active session on this seat changed
             if [ "$(active_uid_of_seat)" = "$uid" ]; then
-                # owner is active again -> reconnect + resume BT
-                reconnect_now
+                resume_bt          # opt-in only
             else
-                # owner just lost the seat -> stop BT cleanly (no tractor drone)
-                suspend_bt
+                suspend_bt         # always: kill the drone
             fi
             ;;
     esac

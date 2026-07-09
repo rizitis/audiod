@@ -117,10 +117,9 @@ hub_bt_reconnect() {            # hub_bt_reconnect <uid>
     done < <(hub_as_user "$uid" bluetoothctl -- devices Paired 2>/dev/null \
              || hub_as_user "$uid" bluetoothctl -- devices 2>/dev/null)
 
-    # Ask the phone (AVRCP target) to resume playback, so the user doesn't have
-    # to tap play after a reconnect. Best-effort: phones that ignore remote
-    # AVRCP just stay paused. Give the transport a moment to come up first.
-    if [ "$cnt" -gt 0 ]; then
+    # Optionally ask the phone to resume playback. OFF by default so the box
+    # never starts music on its own; set HUB_BT_AUTOPLAY=yes to enable.
+    if [ "$cnt" -gt 0 ] && [ "${HUB_BT_AUTOPLAY:-no}" = "yes" ]; then
         sleep 1
         hub_as_user "$uid" sh -c 'printf "menu player\nplay\n" | bluetoothctl' \
             >/dev/null 2>&1
@@ -141,19 +140,33 @@ HUB_BTWATCH=/usr/libexec/audiod/hub-btwatch.sh
 hub_btwatch_start() {           # hub_btwatch_start <uid>
     local uid="$1"
     [ -x "$HUB_BTWATCH" ] || return 0
-    # run as the owner, supervised, one instance (pidfile in the user's ~/.run)
-    if hub_as_user "$uid" sh -c 'daemon --pidfiles=~/.run --name=hub-btwatch --running' 2>/dev/null; then
+    # absolute pidfile dir (XDG runtime); '~' does not expand reliably under sh -c
+    local rundir="/run/user/$uid"
+    # already running? (check by pidfile, and by process, to avoid duplicates)
+    if hub_as_user "$uid" sh -c \
+        "daemon --pidfiles='$rundir' --name=hub-btwatch --running" 2>/dev/null; then
         dbg "hub: btwatch already running for uid $uid"
         return 0
     fi
+    # belt-and-braces: if a stray copy is already running, don't start another
+    if pgrep -u "$uid" -f "hub-btwatch.sh $uid" >/dev/null 2>&1; then
+        dbg "hub: btwatch process already present for uid $uid"
+        return 0
+    fi
     hub_as_user "$uid" sh -c \
-        "daemon -rB --pidfiles=~/.run --name=hub-btwatch -- $HUB_BTWATCH $uid" 2>/dev/null
-    log "hub: started Bluetooth auto-reconnect watcher for uid $uid"
+        "daemon -rB --pidfiles='$rundir' --name=hub-btwatch -- '$HUB_BTWATCH' $uid" \
+        2>/dev/null
+    log "hub: started Bluetooth VT-switch watcher for uid $uid"
 }
 
 hub_btwatch_stop() {            # hub_btwatch_stop <uid>
     local uid="$1"
-    hub_as_user "$uid" sh -c 'daemon --pidfiles=~/.run --name=hub-btwatch --stop' 2>/dev/null
+    local rundir="/run/user/$uid"
+    hub_as_user "$uid" sh -c \
+        "daemon --pidfiles='$rundir' --name=hub-btwatch --stop" 2>/dev/null
+    # clean up any stray copy that escaped the supervisor
+    pkill -u "$uid" -f "hub-btwatch.sh $uid" 2>/dev/null
+    return 0
 }
 
 # ---- who owns the hub (card + Bluetooth) -----------------------------------

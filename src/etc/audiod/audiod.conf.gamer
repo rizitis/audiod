@@ -56,6 +56,13 @@ HUB_OWNER=
 # Length of the 'audioctl hub pair' Bluetooth pairing window, in seconds.
 BT_PAIR_SECONDS=120
 
+# Bluetooth on VT switch: the watcher always stops BT cleanly when you switch
+# away (no speaker drone). Resume is opt-in and stays OFF even in the gamer
+# preset, so the box never starts music by itself on boot/login. Turn on only
+# if you specifically want auto-resume:
+HUB_BT_AUTORESUME=no
+HUB_BT_AUTOPLAY=no
+
 # --- network audio in (kept OFF; enable only for a trusted LAN) ------------
 # To let friends' laptops stream in: set NET_TCP=yes AND a real NET_ACL.
 # WARNING: allowed clients can also see this box's mic/monitors.
