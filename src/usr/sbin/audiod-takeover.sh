@@ -29,6 +29,14 @@ if [ -r /usr/libexec/audiod/audiod-lib.sh ]; then
 fi
 
 echo "Disabling console profile.d starters (Slackware sources only +x files):"
+# Note: recent Slackware (pipewire >= 1.6.8) ships a profile.d/pipewire.sh that
+# does an ordered start with a socket readiness gate AND an idempotency check
+# (daemon --pidfiles=~/.run --name=pipewire --running && return 0), using the
+# same ~/.run + --name=pipewire convention as audiod. So even if a copy is still
+# sourced, it will NOT double-start PipeWire once audiod already has it running.
+# We still chmod -x here so audiod is unambiguously the starter on setups whose
+# /etc/profile honours the execute bit; on setups that source every *.sh the
+# idempotency check is what keeps a single instance. Either way: one PipeWire.
 for f in /etc/profile.d/pipewire.sh /etc/profile.d/pipewire.csh; do
     [ -f "$f" ] && chmod -x "$f" && echo "  chmod -x $f"
 done

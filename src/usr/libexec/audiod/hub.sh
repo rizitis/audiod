@@ -160,14 +160,23 @@ hub_scan_connect() {            # hub_scan_connect <uid> [scan_seconds]
 
     echo ""
     echo "Found devices:"
-    local i info state
+    echo "  (present = advertising now / connectable; away = remembered but not seen)"
+    local i info state present
     for i in "${!macs[@]}"; do
         # figure out this device's state for a helpful label
         info=$(hub_as_user "$uid" bluetoothctl -- info "${macs[$i]}" 2>/dev/null)
+        # a fresh RSSI line means the device is advertising right now (in range,
+        # powered on) as opposed to merely remembered by BlueZ from before
+        if printf '%s' "$info" | grep -q '^[[:space:]]*RSSI:'; then
+            present="present"
+        else
+            present="away"
+        fi
         if printf '%s' "$info" | grep -q 'Connected: yes'; then
             state="connected"
         elif printf '%s' "$info" | grep -q 'Paired: yes'; then
-            state="paired"
+            # a paired device that isn't advertising is probably off/out of range
+            [ "$present" = "away" ] && state="paired, away" || state="paired"
         else
             state="new"
         fi

@@ -23,7 +23,7 @@
 cd $(dirname $0) ; CWD=$(pwd)
 
 PRGNAM=audiod
-VERSION=${VERSION:-1.0.1}
+VERSION=${VERSION:-1.0.2}
 BUILD=${BUILD:-1}
 TAG=${TAG:-_rtz}
 PKGTYPE=${PKGTYPE:-txz}
