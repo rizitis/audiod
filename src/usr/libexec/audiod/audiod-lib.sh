@@ -61,9 +61,20 @@ is_pipewire_mode() {
         return 1                                       # PulseAudio mode
     fi
 
-    # secondary hint: client.conf autospawn (also set by the switch scripts)
+    # secondary hint: client.conf autospawn (also set by the switch scripts).
+    #
+    # Careful: since Slackware's pipewire 1.6.8-2, "autospawn = yes" alone no
+    # longer means PulseAudio. The stock setup may point PulseAudio's autospawn
+    # at /usr/bin/pipewire-start (daemon-binary), so that a Pulse client which
+    # tries to autospawn a daemon actually brings PipeWire up instead. Stock
+    # pipewire-start itself only stands down when autospawn is on AND the
+    # daemon-binary is NOT pipewire-start, so we mirror exactly that logic --
+    # otherwise audiod would misread a PipeWire system as PulseAudio and stay
+    # idle, leaving no audio at all.
     if [ -r /etc/pulse/client.conf ] && \
        grep -Eq '^[[:space:]]*autospawn[[:space:]]*=[[:space:]]*yes' \
+            /etc/pulse/client.conf && \
+       ! grep -Eq '^[[:space:]]*daemon-binary[[:space:]]*=.*pipewire-start' \
             /etc/pulse/client.conf; then
         return 1                                       # PulseAudio autospawn on
     fi

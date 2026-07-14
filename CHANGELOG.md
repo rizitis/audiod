@@ -1,5 +1,18 @@
 # Changelog
 
+
+## 1.0.3 adapt to pipewire 1.6.8-2: profile.d starters are opt-in now
+
+restore.sh no longer chmod +x's them (stock ships them non-executable);
+is_pipewire_mode no longer reads "autospawn = yes" as PulseAudio when
+daemon-binary is pipewire-start; takeover comments updated for the removed
+wireplumber/pipewire-pulse desktop files. Coexistence is unchanged --
+pipewire-start shares audiod's ~/.run/--name convention and idempotency
+check, so PipeWire is never double-started.
+
+---
+
+
 ## 0.2.x build — Hub mode (party audio hub)
 
 This release adds an optional **hub mode** that turns the machine into a party

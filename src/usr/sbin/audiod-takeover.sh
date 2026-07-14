@@ -42,6 +42,11 @@ for f in /etc/profile.d/pipewire.sh /etc/profile.d/pipewire.csh; do
 done
 
 echo "Hiding graphical XDG autostart entries:"
+# Since Slackware's pipewire 1.6.8-2 / wireplumber 0.5.15-3, wireplumber.desktop
+# and pipewire-pulse.desktop are gone: a single pipewire.desktop now runs
+# /usr/bin/pipewire-start, which brings up all three daemons. The loop below
+# still lists the old names -- the [ -r ] guard simply skips the ones that no
+# longer exist -- so hiding pipewire.desktop is what actually matters now.
 for f in wireplumber pipewire-pulse pipewire; do
     d="/etc/xdg/autostart/${f}.desktop"
     if [ -r "$d" ] && ! grep -q '^Hidden=true$' "$d"; then

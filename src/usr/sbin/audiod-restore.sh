@@ -7,9 +7,22 @@
 
 if [ "$(id -u)" != 0 ]; then echo "run as root." >&2; exit 1; fi
 
-echo "Re-enabling console profile.d starters:"
+echo "Console profile.d starters:"
+# Since Slackware's pipewire 1.6.8-2 the profile.d starters ship NON-executable
+# on purpose ("it'll be opt-in") -- /etc/profile only sources +x files, and the
+# graphical XDG autostart entry is what starts PipeWire on a desktop. So the
+# stock state to restore is "not executable": we deliberately do NOT chmod +x
+# here, or we would be enabling more than stock ever did. If you want the
+# console starter back, opt in yourself:
+#     chmod +x /etc/profile.d/pipewire.sh /etc/profile.d/pipewire.csh
 for f in /etc/profile.d/pipewire.sh /etc/profile.d/pipewire.csh; do
-    [ -f "$f" ] && chmod +x "$f" && echo "  chmod +x $f"
+    if [ -f "$f" ]; then
+        if [ -x "$f" ]; then
+            echo "  $f is executable (console autostart opted in) -- left as is"
+        else
+            echo "  $f left non-executable (stock default; chmod +x to opt in)"
+        fi
+    fi
 done
 
 echo "Un-hiding graphical XDG autostart entries:"
