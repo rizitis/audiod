@@ -53,6 +53,23 @@ hub_have() {                    # hub_have <cmd>  -- is a binary available?
     command -v "$1" >/dev/null 2>&1
 }
 
+# Wait until this user's pipewire-pulse actually answers.
+#
+# stack.conf only gates pipewire's own socket (socket:pipewire-0); wireplumber
+# and pipewire-pulse are started with ready='-'. hub_start runs immediately
+# after start_stack, so without this gate every pactl call below can be issued
+# before the pulse socket exists -- they fail, and because their output was
+# discarded the hub looked "configured" while nothing had been created.
+hub_pulse_ready() {             # hub_pulse_ready <uid> [timeout_s]
+    local uid="$1" tries=$(( ${2:-8} * 5 ))
+    while [ "$tries" -gt 0 ]; do
+        hub_as_user "$uid" pactl info >/dev/null 2>&1 && return 0
+        sleep 0.2; tries=$((tries - 1))
+    done
+    log "hub: pipewire-pulse is not answering for uid $uid; skipping pactl setup"
+    return 1
+}
+
 # ---- Bluetooth sink (phones play THROUGH this box) -------------------------
 #
 # We do NOT force the adapter discoverable forever. Instead we expose a bounded
@@ -95,6 +112,7 @@ hub_bt_pairing_window() {       # hub_bt_pairing_window <uid> [seconds]
 # On hub start we DO NOT open the window automatically (safe default). We just
 # make sure the adapter is powered so already-paired phones can reconnect.
 hub_bt_init() {                 # hub_bt_init <uid>
+    local uid="$1"
     hub_bt_available || return 0
     hub_as_user "$uid" bluetoothctl -- power on >/dev/null 2>&1
     log "hub: Bluetooth ready; paired devices may reconnect. Run"
@@ -285,6 +303,14 @@ hub_owner_uname() {             # -> the configured owner's username, or empty
 }
 
 # Read-only: is <uid> the owner right now? (does NOT claim). Used for status.
+#
+# Exit codes are deliberately three-way so status can tell the truth:
+#   0 = uid IS the current owner
+#   1 = someone else owns it
+#   2 = nobody has claimed yet (hub has not started for anyone)
+# Callers that only care about "am I the owner" can keep testing for 0; the
+# old version returned 0 for the unclaimed case too, which made 'audioctl hub
+# status' print OWNER even when hub_start had never run.
 hub_is_owner() {                # hub_is_owner <uid>
     local uid="$1" owner; owner=$(hub_owner_uname)
     if [ -n "$owner" ]; then
@@ -297,8 +323,17 @@ hub_is_owner() {                # hub_is_owner <uid>
     if [ -n "$cur" ]; then
         [ "$uid" = "$cur" ]; return
     fi
-    # nobody has claimed yet -> for display purposes this uid would be owner
-    return 0
+    return 2                    # unclaimed
+}
+
+# The uid currently recorded as owner, or empty when unclaimed. Read-only.
+hub_owner_uid() {
+    local owner; owner=$(hub_owner_uname)
+    if [ -n "$owner" ]; then
+        id -u "$owner" 2>/dev/null
+        return
+    fi
+    [ -r "$HUB_OWNER_STATE" ] && sed -n '1p' "$HUB_OWNER_STATE" 2>/dev/null
 }
 
 # Claim ownership for <uid> if it is free. Returns 0 if <uid> is (now) the
@@ -393,6 +428,7 @@ hub_guest_bt_on() {             # hub_guest_bt_on <uid>
 
 hub_net_init() {                # hub_net_init <uid>
     [ "${NET_TCP:-no}" = "yes" ] || return 0
+    local uid="$1"
 
     local acl="${NET_ACL:-}"
     if [ -z "$acl" ]; then
@@ -400,6 +436,8 @@ hub_net_init() {                # hub_net_init <uid>
         log "hub: set NET_ACL to specific addresses (e.g. 192.168.1.0/24) to enable"
         return 0
     fi
+
+    hub_pulse_ready "$uid" || return 1
 
     local port="${NET_PORT:-4713}"
     # Already loaded? (match our port)
@@ -440,11 +478,16 @@ hub_combined_id() {             # -> pactl sink id of hub_combined, or empty
 
 hub_combine_init() {            # hub_combine_init <uid>
     [ "${COMBINE:-no}" = "yes" ] || return 0
+    local uid="$1"
+    hub_pulse_ready "$uid" || return 1
 
-    # Already there? Just (re)assert it as default and stop.
-    if hub_as_user "$uid" pactl list short modules 2>/dev/null \
-        | grep -q 'module-combine-sink'; then
-        log "hub: combine-sink already present"
+    # Already there? Test for OUR sink, not merely for "some combine module".
+    # Matching any module-combine-sink meant a leftover or foreign combine
+    # module short-circuited this function: it logged "already present", the
+    # set-default-sink below failed silently, and the user was left with
+    # COMBINE=yes and no hub_combined anywhere.
+    if [ -n "$(hub_combined_id "$uid")" ]; then
+        log "hub: 'hub_combined' already present"
         hub_as_user "$uid" pactl set-default-sink hub_combined >/dev/null 2>&1
         return 0
     fi
@@ -461,36 +504,191 @@ hub_combine_init() {            # hub_combine_init <uid>
         log "hub: combine slaves = <all current sinks>"
     fi
 
-    if hub_as_user "$uid" pactl load-module module-combine-sink $args >/dev/null 2>&1; then
-        # give the node a moment to appear, then make it the default
-        local tries=10
-        while [ "$tries" -gt 0 ]; do
-            [ -n "$(hub_combined_id "$uid")" ] && break
-            sleep 0.2; tries=$((tries-1))
-        done
-        if hub_as_user "$uid" pactl set-default-sink hub_combined >/dev/null 2>&1; then
-            log "hub: combine-sink 'hub_combined' created and set as default"
-        else
-            log "hub: combine-sink created, but could not set it as default"
-        fi
-    else
-        log "hub: failed to create combine-sink"
+    # Capture pactl's own diagnostics: discarding them is what made a failed
+    # load indistinguishable from a successful one in the log.
+    local err
+    if ! err=$(hub_as_user "$uid" pactl load-module module-combine-sink $args 2>&1); then
+        log "hub: failed to create combine-sink: ${err:-<no output from pactl>}"
+        return 1
     fi
+
+    # give the node a moment to appear, then make it the default
+    local tries=10
+    while [ "$tries" -gt 0 ]; do
+        [ -n "$(hub_combined_id "$uid")" ] && break
+        sleep 0.2; tries=$((tries - 1))
+    done
+
+    # load-module can return 0 while the sink never materialises (e.g. every
+    # name in COMBINE_SLAVES is wrong). Say so instead of claiming success.
+    if [ -z "$(hub_combined_id "$uid")" ]; then
+        log "hub: module loaded but sink 'hub_combined' never appeared"
+        log "hub: check COMBINE_SLAVES against 'pactl list short sinks'"
+        return 1
+    fi
+
+    if hub_as_user "$uid" pactl set-default-sink hub_combined >/dev/null 2>&1; then
+        log "hub: combine-sink 'hub_combined' created and set as default"
+    else
+        log "hub: combine-sink created, but could not set it as default"
+    fi
+    return 0
+}
+
+# The module id that actually owns OUR sink. Selecting "the first
+# module-combine-sink" was wrong: a foreign or stale combine module (e.g. one
+# loaded from a pipewire-pulse.conf.d drop-in with no sink_name) sorts ahead of
+# ours and would be unloaded in its place, leaving hub_combined behind.
+hub_combine_module_id() {       # hub_combine_module_id <uid>
+    local uid="$1"
+    hub_as_user "$uid" pactl list short modules 2>/dev/null \
+        | awk '$2=="module-combine-sink" && $0 ~ /sink_name=hub_combined([[:space:]]|$)/ {print $1; exit}'
 }
 
 # Remove the combine sink and fall back to a real sink as default.
 hub_combine_off() {             # hub_combine_off <uid>
     local uid="$1" id
-    id=$(hub_as_user "$uid" pactl list short modules 2>/dev/null \
-         | awk '$2=="module-combine-sink"{print $1; exit}')
-    [ -n "$id" ] || { log "hub: no combine-sink to remove"; return 0; }
+    id=$(hub_combine_module_id "$uid")
+    if [ -z "$id" ]; then
+        # Nothing of ours. Say whether some OTHER combine module is loaded, so
+        # a stale one does not look like ours failing to go away.
+        if hub_as_user "$uid" pactl list short modules 2>/dev/null \
+            | grep -q 'module-combine-sink'; then
+            log "hub: no hub_combined of ours; a foreign combine-sink is loaded (left alone)"
+        else
+            log "hub: no combine-sink to remove"
+        fi
+        return 0
+    fi
     hub_as_user "$uid" pactl unload-module "$id" >/dev/null 2>&1
     # pick any real sink as the new default (first non-combine one)
     local newdef
     newdef=$(hub_as_user "$uid" pactl list short sinks 2>/dev/null \
              | awk '$2!="hub_combined"{print $2; exit}')
     [ -n "$newdef" ] && hub_as_user "$uid" pactl set-default-sink "$newdef" >/dev/null 2>&1
-    log "hub: combine-sink removed; default sink -> ${newdef:-<unchanged>}"
+    log "hub: combine-sink removed (module $id); default sink -> ${newdef:-<unchanged>}"
+}
+
+# ---- status ----------------------------------------------------------------
+#
+# Report what is ACTUALLY running, not what the config asks for. Every line
+# that describes runtime state is answered by querying PipeWire/BlueZ/the
+# owner state file. Where config and reality disagree the line says so, so a
+# hub that failed to come up can never look healthy.
+
+hub_status_report() {           # hub_status_report <uid>
+    local uid="$1" me; me=$(id -un "$uid" 2>/dev/null)
+
+    echo "hub status for ${me:-uid $uid} (uid $uid):"
+    echo "  HUB_MODE     : ${HUB_MODE:-no}"
+    echo "  HUB_GROUP    : ${HUB_GROUP:-audiohub}"
+
+    if hub_user_allowed "$uid"; then
+        echo "  membership   : member of ${HUB_GROUP:-audiohub}"
+    else
+        echo "  membership   : NOT a member of ${HUB_GROUP:-audiohub} (hub skips you)"
+    fi
+
+    # --- ownership (real state, not a guess) --------------------------------
+    local ouid oname
+    ouid=$(hub_owner_uid)
+    if [ -n "${HUB_OWNER:-}" ]; then
+        echo "  owner policy : pinned to '$HUB_OWNER' (HUB_OWNER in audiod.conf)"
+    else
+        echo "  owner policy : auto (first hub member to log in claims it)"
+    fi
+    if [ -z "$ouid" ]; then
+        echo "  owner now    : UNCLAIMED -- hub_start has not run for anyone"
+        echo "                 (enabling HUB_MODE in the config does nothing until"
+        echo "                  'rc.audiod restart' or a fresh login)"
+    else
+        oname=$(id -un "$ouid" 2>/dev/null)
+        if [ "$ouid" = "$uid" ]; then
+            echo "  owner now    : you (holds card + Bluetooth)"
+        else
+            echo "  owner now    : ${oname:-uid $ouid} -- you are a guest"
+            echo "                 (to hear the hub: audioshare-guest connect)"
+        fi
+    fi
+
+    # --- did the hub actually start for us? ---------------------------------
+    if pgrep -u "$uid" -f "hub-btwatch.sh $uid" >/dev/null 2>&1; then
+        echo "  VT watcher   : running"
+    else
+        echo "  VT watcher   : not running"
+    fi
+
+    # --- everything below needs a live pulse endpoint -----------------------
+    if ! hub_as_user "$uid" pactl info >/dev/null 2>&1; then
+        echo "  pipewire-pulse: NOT ANSWERING -- no sink/module state available"
+        echo "                 check: audioctl status"
+        return 0
+    fi
+
+    # --- Bluetooth ----------------------------------------------------------
+    local btcount=0 btnames=""
+    if hub_bt_available 2>/dev/null; then
+        while read -r _ mac _; do
+            [ -n "$mac" ] || continue
+            case "$mac" in [0-9A-Fa-f][0-9A-Fa-f]:*) ;; *) continue ;; esac
+            if hub_as_user "$uid" bluetoothctl -- info "$mac" 2>/dev/null \
+                | grep -q 'Connected: yes'; then
+                btcount=$((btcount + 1))
+            fi
+        done < <(hub_as_user "$uid" bluetoothctl -- devices 2>/dev/null)
+        btnames=$(hub_as_user "$uid" pactl list short sinks 2>/dev/null \
+                  | awk '$2 ~ /^bluez_output/{printf "%s ", $2}')
+        echo "  Bluetooth    : adapter present, $btcount device(s) connected"
+        [ -n "$btnames" ] && echo "                 BT sinks: $btnames"
+    else
+        echo "  Bluetooth    : no adapter / bluetoothd down"
+    fi
+
+    # --- network audio ------------------------------------------------------
+    local port="${NET_PORT:-4713}" netloaded=no
+    hub_as_user "$uid" pactl list short modules 2>/dev/null \
+        | awk -v p="port=$port" '$2=="module-native-protocol-tcp" && $0~p{f=1} END{exit !f}' \
+        && netloaded=yes
+    if [ "${NET_TCP:-no}" = "yes" ] && [ "$netloaded" = no ]; then
+        echo "  network audio: NET_TCP=yes but NOT loaded on :$port  <-- mismatch"
+    elif [ "${NET_TCP:-no}" != "yes" ] && [ "$netloaded" = yes ]; then
+        echo "  network audio: loaded on :$port although NET_TCP=no  <-- mismatch"
+    elif [ "$netloaded" = yes ]; then
+        echo "  network audio: listening on :$port (ACL: ${NET_ACL:-<none>})"
+    else
+        echo "  network audio: off"
+    fi
+
+    # --- combine sink -------------------------------------------------------
+    local cid def
+    cid=$(hub_combined_id "$uid")
+    def=$(hub_as_user "$uid" pactl get-default-sink 2>/dev/null)
+    if [ -n "$cid" ]; then
+        if [ "$def" = "hub_combined" ]; then
+            echo "  combine sink : hub_combined present (sink #$cid) and IS the default"
+        else
+            echo "  combine sink : hub_combined present (sink #$cid) but default is '${def:-?}'"
+        fi
+        local margs
+        margs=$(hub_as_user "$uid" pactl list short modules 2>/dev/null \
+                | awk '$2=="module-combine-sink" && $0 ~ /sink_name=hub_combined([[:space:]]|$)/ {$1="";$2="";sub(/^[[:space:]]+/,"");print;exit}')
+        echo "                 args: ${margs:-<none>}"
+        # warn about foreign/stale combine modules sharing this pulse instance
+        local ncomb
+        ncomb=$(hub_as_user "$uid" pactl list short modules 2>/dev/null \
+                | awk '$2=="module-combine-sink"' | wc -l)
+        [ "${ncomb:-0}" -gt 1 ] && \
+            echo "                 NOTE: $ncomb combine-sink modules loaded (one is not ours)"
+        echo "                 outputs now:"
+        hub_as_user "$uid" pactl list short sinks 2>/dev/null \
+            | awk '$2!="hub_combined"{printf "                   - %s\n", $2}'
+    elif [ "${COMBINE:-no}" = "yes" ]; then
+        echo "  combine sink : COMBINE=yes but hub_combined DOES NOT EXIST  <-- mismatch"
+        echo "                 create it now with: audioctl hub combine"
+        echo "                 if that fails, see: grep audiod /var/log/messages | tail"
+    else
+        echo "  combine sink : off (COMBINE=no)"
+    fi
 }
 
 # ---- entry points called by the reactor ------------------------------------

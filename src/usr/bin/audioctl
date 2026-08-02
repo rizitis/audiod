@@ -124,14 +124,10 @@ case "${1:-}" in
                 esac
                 ;;
             status|'')
-                echo "hub status for $ME (uid $UID_):"
-                echo "  HUB_MODE : ${HUB_MODE:-no}"
-                echo "  HUB_GROUP: ${HUB_GROUP:-audiohub}"
-                echo "  HUB_OWNER: ${HUB_OWNER:-<auto: first login wins>}"
-                echo "  you      : $(hub_user_allowed "$UID_" && echo "member (allowed)" || echo "not a member (denied)"); $(hub_is_owner "$UID_" && echo "OWNER (holds card+BT)" || echo "guest (use audioshare to listen)")"
-                echo "  BT sink  : $(hub_bt_available 2>/dev/null && echo available || echo unavailable) (shared adapter)"
-                echo "  NET_TCP  : ${NET_TCP:-no} (ACL: ${NET_ACL:-<none>}, port ${NET_PORT:-4713})"
-                echo "  COMBINE  : ${COMBINE:-no}"
+                # Live state, not a config dump: the old version echoed the
+                # variables from audiod.conf, so it reported a healthy hub
+                # whether or not anything had actually been created.
+                hub_status_report "$UID_"
                 ;;
             *)
                 echo "audioctl hub {pair [seconds]|scan [seconds]|reconnect|play|pause|next|prev|net|combine [off]|status}"
