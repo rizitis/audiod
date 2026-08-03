@@ -23,7 +23,7 @@
 cd $(dirname $0) ; CWD=$(pwd)
 
 PRGNAM=audiod
-VERSION=${VERSION:-2.0.0}
+VERSION=${VERSION:-3.0}
 BUILD=${BUILD:-1}
 TAG=${TAG:-_rtz}
 PKGTYPE=${PKGTYPE:-txz}
@@ -66,26 +66,28 @@ install -d -m 0755                                   $PKG/etc/rc.d
 cp $SRC/usr/sbin/audiod             $PKG/usr/sbin/audiod
 cp $SRC/usr/sbin/audiod-takeover.sh $PKG/usr/sbin/audiod-takeover.sh
 cp $SRC/usr/sbin/audiod-restore.sh  $PKG/usr/sbin/audiod-restore.sh
+cp $SRC/usr/sbin/audiod-doctor.sh   $PKG/usr/sbin/audiod-doctor.sh
 cp $SRC/usr/bin/audioctl            $PKG/usr/bin/audioctl
 chmod 0755 $PKG/usr/sbin/audiod \
            $PKG/usr/sbin/audiod-takeover.sh \
            $PKG/usr/sbin/audiod-restore.sh \
+           $PKG/usr/sbin/audiod-doctor.sh \
            $PKG/usr/bin/audioctl
 
 # sourced library (NOT executable)
 install -m 0644 $SRC/usr/libexec/audiod/audiod-lib.sh \
                                                      $PKG/usr/libexec/audiod/audiod-lib.sh
 
-# optional hub extension (sourced, NOT executable). Inert unless HUB_MODE=yes.
-if [ -f $SRC/usr/libexec/audiod/hub.sh ]; then
+# hub extension (sourced, NOT executable). Inert unless HUB_MODE=yes.
   install -m 0644 $SRC/usr/libexec/audiod/hub.sh \
-                                                     $PKG/usr/libexec/audiod/hub.sh
-fi
+                                                  $PKG/usr/libexec/audiod/hub.sh
+
 # hub BT auto-reconnect watcher (executable helper run under daemon(1))
-if [ -f $SRC/usr/libexec/audiod/hub-btwatch.sh ]; then
   install -m 0755 $SRC/usr/libexec/audiod/hub-btwatch.sh \
                                                      $PKG/usr/libexec/audiod/hub-btwatch.sh
-fi
+
+install -m 0755 $SRC/usr/libexec/audiod/hub-pulsewatch.sh \
+                                                     $PKG/usr/libexec/audiod/hub-pulsewatch.sh
 
 # config + rc as .new (doinst.sh installs/preserves them)
 # config + rc as .new (doinst.sh installs/preserves them)

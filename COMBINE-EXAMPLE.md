@@ -37,18 +37,47 @@ audio menu.
 ```
 $ audioctl hub status
 hub status for omen (uid 10000):
-  HUB_MODE : yes
-  HUB_GROUP: audiohub
-  HUB_OWNER: <auto: first login wins>
-  you      : member (allowed); OWNER (holds card+BT)
-  BT sink  : available (shared adapter)
-  NET_TCP  : no (ACL: <none>, port 4713)
-  COMBINE  : yes
+  HUB_MODE     : yes
+  HUB_GROUP    : audiohub
+  membership   : member of audiohub
+  owner policy : auto (first hub member to log in claims it)
+  owner now    : you (holds card + Bluetooth)
+  VT watcher   : running
+  Bluetooth    : adapter present, 1 device(s) connected
+                 BT sinks: bluez_output.41_42_E4_0C_EA_BB.1
+  network audio: off
+  combine sink : hub_combined present (sink #70) and IS the default
+                 args: sink_name=hub_combined
+                 outputs now:
+                   - alsa_output...HiFi__HDMI3__sink
+                   - alsa_output...HiFi__HDMI2__sink
+                   - alsa_output...HiFi__HDMI1__sink
+                   - alsa_output...HiFi__Speaker__sink
+                   - bluez_output.41_42_E4_0C_EA_BB.1
 ```
 
-Everything the hub needs is in place: hub mode is on, this user is an allowed
-member and the current **owner** (so it holds the card and the Bluetooth
-adapter), the BT sink is available, network audio is off, and combine is on.
+Everything the hub needs is in place, and — this matters — **every runtime line
+above is a live query, not an echo of the config file**. `combine sink` asks
+PipeWire whether `hub_combined` actually exists and whether it is the default;
+`Bluetooth` asks BlueZ; `owner now` reads the ownership state file; `VT watcher`
+looks for the running process.
+
+An earlier version printed the configuration variables instead, which meant it
+reported a healthy hub whether or not anything had been created — a hub that had
+silently failed to come up looked identical to one that was working. Where
+configuration and reality now disagree, the line says so:
+
+```
+  combine sink : COMBINE=yes but hub_combined DOES NOT EXIST  <-- mismatch
+                 create it now with: audioctl hub combine
+```
+
+and a combine sink you switched off yourself is reported as a choice, not a
+fault:
+
+```
+  combine sink : off -- you switched it off ('audioctl hub combine off')
+```
 
 ### Seeing what's around, from the terminal
 
@@ -68,6 +97,39 @@ Connect which number (Enter to cancel)?
 the `BT Speaker` — and one unknown device is just `new`. You'd type a number to
 connect (or disconnect) one, or press Enter to leave things as they are. Here we
 leave them: the phone and speaker are exactly the pieces the mix below uses.
+
+### Where the combine sink lives, and why that matters
+
+`hub_combined` is created with `pactl load-module module-combine-sink`, which
+means it lives **inside the `pipewire-pulse` process**. If that process is
+restarted — by its supervisor, by `audioctl restart pipewire-pulse`, or by a
+crash — the sink dies with it. The stack afterwards looks perfectly healthy
+(`pipewire`, `wireplumber` and `pipewire-pulse` all running, audio working) and
+no login1 signal is raised, so nothing would rebuild the hub.
+
+`hub-pulsewatch.sh` closes that gap: it notices the pulse server was replaced
+and re-applies the owner's extras. You can see it work:
+
+```
+$ audioctl hub status | grep 'combine sink'
+  combine sink : hub_combined present (sink #145) and IS the default
+$ audioctl restart pipewire-pulse
+$ sleep 12
+$ audioctl hub status | grep 'combine sink'
+  combine sink : hub_combined present (sink #348) and IS the default
+```
+
+Different sink id, same working hub. In the log:
+
+```
+audiod: hub: pipewire-pulse was replaced (pid:11261 -> pid:12978); restoring hub extras
+audiod: hub: combine-sink 'hub_combined' created over 5 sink(s), now default
+```
+
+The `over 5 sink(s)` count is deliberate. Creating a combine sink at a moment
+when no real sink has been published yet produces a sink with no members, which
+does not survive — and used to be logged as a success. The count makes an empty
+mix visible at a glance.
 
 ### The routing commands
 
@@ -127,6 +189,13 @@ the BT Speaker).
 
 Both streams land on `hub_combined` at the same time, so PipeWire **sums** them,
 and the single combined result is mirrored to **every** speaker.
+
+> **The mix is fixed at creation time.** `hub_combined` mirrors to the sinks that
+> existed when it was created. *Sources* can come and go freely — that is the
+> whole point, and a new phone joins the mix instantly — but a **new output**
+> does not. Connect another Bluetooth speaker mid-party and it stays silent
+> until you re-create the sink with `audioctl hub combine off && audioctl hub
+> combine`. Pair your speakers before you start the mix.
 
 ### The whole path in one picture
 

@@ -52,7 +52,7 @@ The SlackBuild ships a ready-to-go gamer config when you pass `GAME=ON`:
 
 ```sh
 GAME=ON bash audiod.SlackBuild
-sudo upgradepkg --install-new /tmp/audiod-0.2.2-noarch-1_rtz.txz
+sudo upgradepkg --install-new /tmp/audiod-3.0-noarch-1_rtz.txz
 ```
 
 This installs a config with hub mode **on** and combine (sound everywhere)
@@ -62,7 +62,7 @@ This installs a config with hub mode **on** and combine (sound everywhere)
 
 ```sh
 bash audiod.SlackBuild
-sudo upgradepkg --install-new /tmp/audiod-0.2.2-noarch-1_rtz.txz
+sudo upgradepkg --install-new /tmp/audiod-3.0-noarch-1_rtz.txz
 # then edit /etc/audiod/audiod.conf and set HUB_MODE=yes (and COMBINE=yes)
 ```
 
@@ -107,8 +107,8 @@ sudo /etc/rc.d/rc.audiod restart
 audioctl hub status
 ```
 
-You should see `HUB_MODE: yes`, your membership as `member (allowed)`, and
-`OWNER (holds card+BT)`.
+You should see `HUB_MODE: yes`, `membership: member of audiohub`, and
+`owner now: you (holds card + Bluetooth)`.
 
 ---
 
@@ -122,7 +122,16 @@ All hub commands run as your normal user (no root) via `audioctl hub`.
 audioctl hub status
 ```
 Shows hub mode, your group membership, whether you're the owner, and the state
-of Bluetooth / network / combine.
+of Bluetooth / network / combine. Everything about the *running* system is a
+live query rather than a repeat of the config file, so if the combine sink is
+missing it says so instead of reporting the config value:
+
+```
+  combine sink : hub_combined present (sink #70) and IS the default
+                 outputs now:
+                   - alsa_output...HiFi__Speaker__sink
+                   - bluez_output.41_42_E4_0C_EA_BB.1
+```
 
 ### Bluetooth: scan and connect from the terminal
 
@@ -187,6 +196,15 @@ audioctl hub combine off   # stop mirroring, go back to a single output
 With combine on, music plays on your speakers + every HDMI output + any
 Bluetooth speaker at once. Toggle it live whenever you want.
 
+**Connect your speakers first.** The mix is fixed to the outputs that existed
+when you created it. Friends' phones can join and leave freely — those are
+*sources* — but a Bluetooth **speaker** connected afterwards stays silent until
+you rebuild the mix:
+
+```sh
+audioctl hub combine off && audioctl hub combine
+```
+
 ### Network audio (optional, off by default)
 
 Edit `/etc/audiod/audiod.conf`:
@@ -218,7 +236,8 @@ sudo groupadd audiohub && sudo gpasswd -a me audiohub   # then re-login
 
 # start of the night:
 audioctl hub status            # confirm you're the owner, BT available
-audioctl hub combine           # sound everywhere (if not already on)
+audioctl hub scan              # connect your BT speakers FIRST...
+audioctl hub combine           # ...then build the mix around them
 audioctl hub pair              # let a friend pair their phone
 
 # friend plays music from their phone -> it fills the room
@@ -245,6 +264,10 @@ NET_PORT=4713
 
 COMBINE=yes              # sound-everywhere on by default (gamer preset)
 COMBINE_SLAVES=          # empty = ALL sinks incl. HDMI; or list specific ones
+COMBINE_WAIT=15          # seconds to wait for a real sink before building the mix
+
+HUB_PULSEWATCH_ENABLE=yes    # rebuild the mix if pipewire-pulse restarts
+HUB_PULSEWATCH_INTERVAL=5    # how often to check (seconds)
 ```
 
 To send sound to only some outputs (e.g. speakers + one HDMI, not all):
@@ -275,6 +298,21 @@ Find the exact sink names with: `pactl list short sinks`.
   gaming rig with a single user this never comes up.
 * **Turning it all off.** Set `HUB_MODE=no` and restart audiod — you're back to
   a plain, stock-behaving audio setup.
+* **Your mic will howl if the room is loud.** Combine plays through the laptop
+  speakers *and* the Bluetooth ones, and your built-in mic sits centimetres from
+  the laptop speakers. Recording or voice chat while the party is loud gives
+  acoustic feedback. Use a headset — that is the only real fix.
+* **After a `slackpkg upgrade-all`.** A pulseaudio upgrade can reinstall
+  `/etc/xdg/autostart/pulseaudio.desktop`, which starts a second audio server at
+  your next login and quietly steals the socket from `pipewire-pulse`. The
+  symptom is unmistakable: **sound works, but the hub is gone.** Fix it with:
+
+  ```sh
+  sudo audiod-doctor.sh          # add --check first to see what it would change
+  ```
+
+  It also repairs a `~/.config/pulse/client.conf` that shadows the system one —
+  the other way a stray PulseAudio gets started.
 
 ---
 
@@ -289,6 +327,7 @@ audioctl hub reconnect              # pull Bluetooth back to you
 audioctl hub combine [off]          # sound everywhere on/off
 audioctl hub net                    # (re)apply network audio from config
 audioctl status|restart             # your own PipeWire stack
+sudo audiod-doctor.sh               # after a pipewire/pulseaudio upgrade
 ```
 
 Game on. 🎮🎧

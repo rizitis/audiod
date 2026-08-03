@@ -65,11 +65,18 @@ Hub mode is off by default and changes nothing until you turn it on — see
 ## What it does
 
 * **Reacts to login/logout, not to shells.** It watches elogind's
-  `org.freedesktop.login1` D-Bus interface for `UserNew` / `UserRemoved`
-  signals. elogind reference-counts a user's sessions for us, so `UserNew`
-  fires only on the user's *first* login and `UserRemoved` only on their
-  *last* logout. One PipeWire stack per user, surviving VT switches and
+  `org.freedesktop.login1` D-Bus interface for `UserNew`/`UserRemoved` **and**
+  `SessionNew`/`SessionRemoved`. elogind reference-counts a user's sessions, so
+  `UserNew` fires only on the user's *first* login and `UserRemoved` only on
+  their *last* logout. One PipeWire stack per user, surviving VT switches and
   multiple concurrent sessions of the same user.
+
+  The session signals are not redundant. With `loginctl enable-linger` the user
+  object is created **at boot**, before anyone logs in — so the later graphical
+  login raises `SessionNew` and **no `UserNew` at all**. Keying on `UserNew`
+  alone meant nothing ever started on a lingering system. Both pairs are
+  handled, and the handlers are idempotent, so whichever arrives first wins and
+  the other is a no-op.
 
 * **Starts the stack in dependency order, with a readiness gate.** On first
   login it starts `pipewire`, **waits for its socket to actually appear**,
@@ -138,7 +145,8 @@ Hub mode is off by default and changes nothing until you turn it on — see
 ```
         elogind (login1 D-Bus)                 audiod (root daemon)
         ----------------------                 --------------------
-  user first login  --> UserNew(uid)  ------>  gate: seat + Class=user + Remote=no ?
+  user first login  --> UserNew(uid)     --->  gate: seat + Class=user + Remote=no ?
+     ...or, with linger --> SessionNew(id) --/   (id resolved to its uid)
                                                  |
                                                  v
                                         ensure session bus (detect/reuse, opt. spawn)
@@ -149,12 +157,17 @@ Hub mode is off by default and changes nothing until you turn it on — see
                                                  --> start pipewire-pulse
                                         (each under: daemon -rB, respawn)
 
-  user last logout --> UserRemoved(uid) ----->  stop the stack, targeted by name
+  user last logout --> UserRemoved(uid)  --->  stop the stack, targeted by name
+     ...or, with linger --> SessionRemoved --/   (only once no seated session is left)
 ```
 
-* **Reactor** (`/usr/sbin/audiod`): a foreground root daemon. On start it
-  reconciles users already logged in, then monitors login1 signals via
-  `gdbus monitor`, reconnecting if the stream drops.
+* **Reactor** (`/usr/sbin/audiod`): a foreground root daemon. It attaches to
+  the login1 signal stream via `gdbus monitor`, then reconciles users already
+  logged in — **in that order, and on every reconnect**. Attaching first means
+  anything that happens during reconcile is buffered rather than lost;
+  reconciling after every reconnect means a login that occurred while the
+  stream was down is still picked up. Reconciling once at startup, before
+  attaching, left a window in which a login fell through both mechanisms.
 * **Privilege drop**: services run as the target user via
   `setpriv --reuid --regid --init-groups` with a clean `env -i` environment
   (no PAM → it never opens a second elogind session that would corrupt the
@@ -189,8 +202,11 @@ Hub mode is off by default and changes nothing until you turn it on — see
 /usr/libexec/audiod/audiod-lib.sh   root:root 0644  shared logic (sourced)
 /usr/libexec/audiod/hub.sh          root:root 0644  hub logic (sourced, opt-in)
 /usr/libexec/audiod/hub-btwatch.sh  root:root 0755  hub BT VT-switch watcher
+/usr/libexec/audiod/hub-pulsewatch.sh root:root 0755 restores hub extras after
+                                                    pipewire-pulse is replaced
 /usr/sbin/audiod-takeover.sh        root:root 0755  disable stock autostart
 /usr/sbin/audiod-restore.sh         root:root 0755  re-enable stock autostart
+/usr/sbin/audiod-doctor.sh          root:root 0755  repair what upgrades break
 /etc/rc.d/rc.audiod                 root:root 0644  init script (0644 = OFF)
 /etc/audiod/audiod.conf             root:root 0644  configuration
 /etc/audiod/stack.conf              root:root 0644  ordered service list
@@ -200,7 +216,9 @@ Hub mode is off by default and changes nothing until you turn it on — see
 Runtime (not part of the package): `/run/audiod.pid` (root); and, owned by the
 user, `~/.run/{pipewire,wireplumber,pipewire-pulse,dbus}.pid` plus
 `/run/user/$uid/bus` if audiod spawns a bus. Hub mode also uses
-`/run/audiod-hub-owner` (auto-owner state, cleared on reboot).
+`/run/audiod-hub-owner` (auto-owner state, cleared on reboot) and
+`/run/user/$uid/audiod-hub-combine` (records whether you switched the combine
+sink off by hand, so the watcher does not put it back).
 
 ## Build & install
 
@@ -331,6 +349,34 @@ may remain as harmless leftovers.
 * **`audioctl restart` seems to do nothing.** Check you are in PipeWire mode
   and that `~/.run` holds the pidfiles (`ls ~/.run`).
 
+* **Audio works, but the hub is missing.** Almost always means `pactl` is
+  talking to a *different* server than WirePlumber. A real PulseAudio daemon
+  and `pipewire-pulse` both want `/run/user/$uid/pulse/native`, and whoever
+  binds it first owns every `pactl` call — so `hub_combined` gets created
+  inside PulseAudio while `wpctl` and `coppwr` never see it:
+
+  ```sh
+  pactl info | grep -i 'server name'   # want: PulseAudio (on PipeWire x.y.z)
+  pgrep -a pulseaudio                  # want: nothing
+  ```
+
+  Two things cause it, and `audiod-doctor.sh` fixes both:
+
+  1. `/etc/xdg/autostart/pulseaudio.desktop` reinstalled by a package upgrade.
+  2. A per-user `~/.config/pulse/client.conf`. libpulse uses the per-user file
+     **instead of** `/etc/pulse/client.conf` — it does not merge them — so a
+     system-wide `autospawn = no` silently stops applying. A file containing
+     nothing but a commented-out line is enough to do this.
+
+* **Nothing starts at boot, but `rc.audiod restart` fixes it.** Check
+  `loginctl show-user <uid> -p Linger`. With linger enabled the user object
+  exists from boot, so logging in raises `SessionNew` and never `UserNew`.
+  Handled since this version; if you see it, an older `audiod` is installed
+  (`grep -c SessionNew /usr/sbin/audiod` should be non-zero).
+
+* **After a pipewire/pulseaudio upgrade.** Run `sudo audiod-doctor.sh`. Use
+  `--check` first if you want to see what it would change.
+
 ## Design notes & rationale
 
 * **Why elogind's `UserNew`/`UserRemoved` and not polling `loginctl`?** They
@@ -349,6 +395,19 @@ may remain as harmless leftovers.
   `dbus-run-session` put the bus in `/tmp` and advertise it only through
   `DBUS_SESSION_BUS_ADDRESS` in the session environment — elogind has no idea
   where it is, so the environment is the only source of truth.
+* **Why `SessionNew` as well as `UserNew`?** Because with `enable-linger` the
+  user object predates every login, so `UserNew` never fires for the login you
+  care about. Sessions are the event that actually correlates with "someone is
+  now sitting at this machine".
+* **Why reconcile on every stream reconnect?** `gdbus monitor` can drop, and a
+  login during the gap would otherwise be invisible forever. Reconcile is
+  cheap and idempotent, so running it on each reconnect is strictly better
+  than trusting a single pass at startup.
+* **Why a watcher for `pipewire-pulse` rather than a config drop-in?** A
+  `pactl`-loaded module lives in the server process. Putting the combine sink
+  in a config file instead would fix the lifetime but lose the runtime control
+  (`audioctl hub combine [off]`) and the ability to enumerate sinks at the
+  moment of creation. The watcher keeps both.
 * **Why a liveness check on the standard-path bus?** A stale socket left at
   `/run/user/$uid/bus` by a dead daemon would otherwise be mistaken for a live
   bus; `fuser` confirms something is actually serving it.
@@ -400,6 +459,12 @@ task-oriented walkthrough.
 * **Network audio (optional).** Trusted LAN machines can stream to the box.
 * **VT-switch watcher.** Stops Bluetooth cleanly on VT switch so the speakers
   never "drone"; opt-in auto-resume when you return.
+* **pipewire-pulse watcher.** `hub_combined` and the network-audio module are
+  loaded *into* `pipewire-pulse` and die with it. Its supervisor then restarts
+  the service, so the stack looks perfectly healthy afterwards while the hub is
+  silently gone — and no login1 signal is raised, so nothing would rebuild it.
+  `hub-pulsewatch.sh` notices the server was replaced and re-applies the
+  owner's extras. It respects `audioctl hub combine off`.
 
 ### Permissions: group-based, per-user
 
@@ -473,6 +538,10 @@ NET_PORT=4713
 
 COMBINE=no               # mirror playback to several outputs, made default sink
 COMBINE_SLAVES=          # empty = ALL sinks (Speaker+HDMI+BT); or a,b to restrict
+COMBINE_WAIT=15          # seconds to wait for a real sink before creating combine
+
+HUB_PULSEWATCH_ENABLE=yes    # rebuild hub extras when pipewire-pulse restarts
+HUB_PULSEWATCH_INTERVAL=5    # how often the watcher checks (seconds)
 ```
 
 ### Usage
@@ -506,6 +575,17 @@ audioctl hub net                 # (re)apply network audio from the config
 * `audioctl hub scan` only finds devices that are actively advertising; a
   smartwatch already bonded to a phone, for example, won't appear unless you put
   it into pairing mode.
+* **The combine sink is static.** It mirrors to the sinks that existed when it
+  was created. Connect a Bluetooth speaker afterwards and it will *not* join
+  the mix on its own — re-create it with `audioctl hub combine off` followed by
+  `audioctl hub combine`. (Making it follow new sinks dynamically needs the
+  native `module-combine-stream` with `stream.rules` rather than the PulseAudio
+  compatibility module; not done yet.)
+* **A microphone near loud speakers will howl.** Combine plays the same audio
+  from the built-in speakers *and* any Bluetooth speaker, and a laptop's
+  built-in mic array sits centimetres from those speakers. Recording while the
+  hub is loud gives acoustic feedback — that is physics, not a bug. Use
+  headphones for monitoring, or load `module-echo-cancel`.
 
 ---
 

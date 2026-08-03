@@ -70,14 +70,47 @@ group_warn() {                            # soft check, never blocks
 }
 
 # --- event handlers ---------------------------------------------------------
+# uids we have already brought up, so a repeated reconcile does not report a
+# login that did not happen. Cleared per-uid on logout.
+KNOWN_UIDS=" "
+# uids we have already complained about, so the message appears once, not on
+# every reconcile.
+WARNED_UIDS=" "
+
+uid_warned()  { case "$WARNED_UIDS" in *" $1 "*) return 0 ;; esac; return 1; }
+uid_known()   { case "$KNOWN_UIDS" in *" $1 "*) return 0 ;; esac; return 1; }
+uid_forget()  { KNOWN_UIDS=$(echo "$KNOWN_UIDS" | sed "s/ $1 / /")
+                WARNED_UIDS=$(echo "$WARNED_UIDS" | sed "s/ $1 / /"); }
+
 handle_user_new() {
     local uid="$1"
     [ "$uid" -ge 1000 ] 2>/dev/null || { dbg "skip system uid $uid"; return 0; }
     if ! wait_for_seat_session "$uid" "${SEAT_WAIT:-5}"; then
-        dbg "uid $uid: no local seat session; skipping"; return 0
+        # Say this out loud, once per uid. It used to be dbg-only, i.e. silent
+        # under the default DEBUG=no -- and that silence is exactly what hid a
+        # lingering user (present at boot, no session yet) for a long time:
+        # the log showed 'reconciling' and then simply nothing, with no way to
+        # tell whether the user was skipped, not found, or never looked at.
+        if ! uid_known "$uid" && ! uid_warned "$uid"; then
+            log "uid $uid: no local seat session after ${SEAT_WAIT:-5}s; not starting yet"
+            log "uid $uid: (normal at boot for a lingering user; waiting for SessionNew)"
+            WARNED_UIDS="$WARNED_UIDS$uid "
+        else
+            dbg "uid $uid: still no local seat session; skipping"
+        fi
+        return 0
     fi
     group_warn "$uid"
-    log "user $uid logged in (first session) -> starting audio stack"
+    # reconcile now runs on every stream reconnect, so this can legitimately be
+    # reached many times for one session. Announce a login only the first time;
+    # afterwards this is a re-assert and must not look like a new login in the
+    # log, or the log becomes useless for diagnosing real session events.
+    if uid_known "$uid"; then
+        dbg "uid $uid already up; re-asserting stack and hub extras"
+    else
+        log "user $uid logged in (first session) -> starting audio stack"
+        KNOWN_UIDS="$KNOWN_UIDS$uid "
+    fi
     start_stack "$uid"
     # Optional party-hub extras (no-op unless HUB_MODE=yes).
     type hub_start >/dev/null 2>&1 && hub_start "$uid"
@@ -86,9 +119,28 @@ handle_user_new() {
 handle_user_removed() {
     local uid="$1"
     [ "$uid" -ge 1000 ] 2>/dev/null || return 0
+    uid_forget "$uid"
     log "user $uid logged out (last session) -> tearing down audio stack"
     type hub_stop >/dev/null 2>&1 && hub_stop "$uid"
     stop_stack "$uid"
+}
+
+# uid that owns a session id, via loginctl. Empty when the session is gone.
+uid_of_session() {                        # uid_of_session <session-id>
+    session_prop "$1" User
+}
+
+# Does this uid still hold any local seated session?
+uid_has_session() {                       # uid_has_session <uid>
+    local sid seat class remote sessions
+    sessions=$(loginctl show-user "$1" 2>/dev/null | sed -n 's/^Sessions=//p')
+    for sid in $sessions; do
+        seat=$(session_prop "$sid" Seat)
+        class=$(session_prop "$sid" Class)
+        remote=$(session_prop "$sid" Remote)
+        [ -n "$seat" ] && [ "$class" = user ] && [ "$remote" = no ] && return 0
+    done
+    return 1
 }
 
 dispatch() {                              # dispatch <signal-line>
@@ -98,10 +150,45 @@ dispatch() {                              # dispatch <signal-line>
             uid=$(printf '%s\n' "$1" | sed -n 's/.*UserNew (uint32 \([0-9]\{1,\}\).*/\1/p')
             [ -n "$uid" ] && handle_user_new "$uid" &
             ;;
+        # SessionNew matters as much as UserNew, and on some systems it is the
+        # ONLY signal that arrives.
+        #
+        # UserNew fires when the USER object is created, not when a session
+        # starts. With 'loginctl enable-linger' the user object is created at
+        # boot, before anyone logs in -- so the later graphical login raises
+        # SessionNew and no UserNew at all. Keying solely on UserNew meant the
+        # stack and hub were never started on a lingering system: reconcile at
+        # boot found the user but no seat session yet and gave up quietly, and
+        # the actual login was never seen. Handling SessionNew closes that.
+        *Manager.SessionNew*)
+            local sid uid
+            sid=$(printf '%s\n' "$1" | sed -n "s/.*SessionNew ('\([^']\{1,\}\)'.*/\1/p")
+            [ -n "$sid" ] || return 0
+            uid=$(uid_of_session "$sid")
+            [ -n "$uid" ] && handle_user_new "$uid" &
+            ;;
         *Manager.UserRemoved*)
             local uid
             uid=$(printf '%s\n' "$1" | sed -n 's/.*UserRemoved (uint32 \([0-9]\{1,\}\).*/\1/p')
             [ -n "$uid" ] && handle_user_removed "$uid" &
+            ;;
+        # Mirror image of the above: with linger the user object survives
+        # logout, so UserRemoved never comes. Tear down when the last local
+        # seated session of that user goes away instead.
+        *Manager.SessionRemoved*)
+            local sid uid
+            sid=$(printf '%s\n' "$1" | sed -n "s/.*SessionRemoved ('\([^']\{1,\}\)'.*/\1/p")
+            [ -n "$sid" ] || return 0
+            uid=$(uid_of_session "$sid")
+            # The session object is usually gone by the time we look, so fall
+            # back to asking which known uid no longer has a session.
+            if [ -z "$uid" ]; then
+                local k
+                for k in $KNOWN_UIDS; do
+                    uid_has_session "$k" || { uid="$k"; break; }
+                done
+            fi
+            [ -n "$uid" ] && ! uid_has_session "$uid" && handle_user_removed "$uid" &
             ;;
     esac
 }
@@ -118,12 +205,30 @@ reconcile() {
 }
 
 # --- main loop --------------------------------------------------------------
+#
+# reconcile() runs on EVERY (re)connect, not just once at startup, and it runs
+# AFTER the stream is attached rather than before.
+#
+# Both details matter. Running it only once meant any UserNew raised while the
+# stream was down was lost for good: the reconnect re-attached but never asked
+# who was logged in, so a user who appeared during the gap was never noticed
+# and their stack + hub extras were never started. Running it BEFORE attaching
+# left the same hole at startup -- audiod reconciled an empty user list at boot
+# and only attached seconds later, so a login inside that window fell through
+# both mechanisms. Attaching first and reconciling second closes the window
+# from both sides: anything that happens during reconcile is buffered on the
+# stream, and anything that happened before it shows up in the user list.
+#
+# handle_user_new is idempotent (start_service skips services already running,
+# hub_start re-asserts rather than duplicates), so the repeat costs nothing.
 monitor_loop() {
     local line
     while :; do
         log "connecting to login1 signal stream"
         exec 3< <(stdbuf -oL gdbus monitor -y -d org.freedesktop.login1 2>/dev/null)
         GDBUS_PID=$!
+        # Catch up on anything missed while we were not listening.
+        reconcile
         while IFS= read -r line <&3; do
             dispatch "$line"
         done
@@ -147,5 +252,7 @@ if ! is_pipewire_mode; then
     exit 0
 fi
 
-reconcile
+# NOTE: no reconcile() here -- monitor_loop does it on every connect, which
+# includes the first one. Calling it here as well would only re-open the
+# startup race it is meant to close.
 monitor_loop

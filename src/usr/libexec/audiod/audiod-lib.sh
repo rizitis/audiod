@@ -41,6 +41,81 @@ rundir_for() { echo "$(home_for "$1")/.run"; }
 # --- audio-server mode (respect Slackware's switch) -------------------------
 # return 0 = PipeWire mode (manage), 1 = PulseAudio mode (stand down)
 #
+# --- client.conf resolution -------------------------------------------------
+#
+# Read client.conf the way libpulse actually reads it, which is NOT simply
+# /etc/pulse/client.conf.
+#
+# libpulse uses the FIRST main file that exists: $PULSE_CLIENTCONFIG, then
+# ~/.config/pulse/client.conf, then /etc/pulse/client.conf. The per-user file
+# REPLACES the system one -- there is no merge. Directives in client.conf.d/
+# are then layered on top, later files winning, with the user's directory
+# taking precedence over the system's.
+#
+# Reading only the system file is how a system could look correctly configured
+# while behaving otherwise: a user's own client.conf shadowed it entirely, so
+# a system-wide "autospawn = no" never applied and PulseAudio was free to
+# autospawn and take the socket from pipewire-pulse. audiod read the system
+# file, concluded PipeWire mode, and started a stack that lost every race.
+
+# Echo the client.conf files that apply to <uid>, in the order libpulse reads
+# them (main file first, then drop-ins).
+pulse_client_conf_files() {     # pulse_client_conf_files [uid]
+    local uid="${1:-$(id -u)}" h main
+    h=$(home_for "$uid" 2>/dev/null) || h=""
+
+    if [ -n "${PULSE_CLIENTCONFIG:-}" ] && [ -r "$PULSE_CLIENTCONFIG" ]; then
+        main="$PULSE_CLIENTCONFIG"
+    elif [ -n "$h" ] && [ -r "$h/.config/pulse/client.conf" ]; then
+        main="$h/.config/pulse/client.conf"
+    elif [ -r /etc/pulse/client.conf ]; then
+        main=/etc/pulse/client.conf
+    fi
+    [ -n "$main" ] && printf '%s\n' "$main"
+
+    # Drop-ins: system first, user second (user wins on conflict).
+    local d f
+    for d in /etc/pulse/client.conf.d "${h:+$h/.config/pulse/client.conf.d}"; do
+        [ -d "$d" ] || continue
+        for f in "$d"/*.conf; do
+            [ -r "$f" ] && printf '%s\n' "$f"
+        done
+    done
+}
+
+# Value of a client.conf directive as libpulse would resolve it: last setting
+# across the applicable files wins. Empty when unset anywhere.
+pulse_client_conf_get() {       # pulse_client_conf_get <key> [uid]
+    local key="$1" uid="${2:-$(id -u)}" f val="" line
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        line=$(sed -n "s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*//p" "$f" 2>/dev/null \
+               | sed 's/[[:space:]]*[;#].*$//; s/[[:space:]]*$//' | tail -1)
+        [ -n "$line" ] && val="$line"
+    done < <(pulse_client_conf_files "$uid")
+    printf '%s\n' "$val"
+}
+
+# Is PulseAudio allowed to autospawn? Unset means yes -- that is libpulse's
+# default, and assuming "no" is what let this go unnoticed.
+pulse_autospawn_on() {          # pulse_autospawn_on [uid]
+    local v; v=$(pulse_client_conf_get autospawn "${1:-}")
+    case "$v" in
+        no|false|off|0) return 1 ;;
+        *)              return 0 ;;   # yes, or unset (libpulse default)
+    esac
+}
+
+# Would an autospawn actually start PipeWire? Slackware can point
+# daemon-binary at pipewire-start, in which case autospawn=yes is harmless.
+pulse_daemon_is_pipewire() {    # pulse_daemon_is_pipewire [uid]
+    local v; v=$(pulse_client_conf_get daemon-binary "${1:-}")
+    case "$v" in
+        *pipewire-start*) return 0 ;;
+        *)                return 1 ;;
+    esac
+}
+
 # Slackware's pipewire-enable.sh / pipewire-disable.sh flip the audio server by
 # renaming the XDG autostart entries. In PulseAudio mode, pulseaudio.desktop is
 # active and pipewire.desktop has been renamed to pipewire.desktop.sample. That
@@ -71,11 +146,7 @@ is_pipewire_mode() {
     # daemon-binary is NOT pipewire-start, so we mirror exactly that logic --
     # otherwise audiod would misread a PipeWire system as PulseAudio and stay
     # idle, leaving no audio at all.
-    if [ -r /etc/pulse/client.conf ] && \
-       grep -Eq '^[[:space:]]*autospawn[[:space:]]*=[[:space:]]*yes' \
-            /etc/pulse/client.conf && \
-       ! grep -Eq '^[[:space:]]*daemon-binary[[:space:]]*=.*pipewire-start' \
-            /etc/pulse/client.conf; then
+    if pulse_autospawn_on && ! pulse_daemon_is_pipewire; then
         return 1                                       # PulseAudio autospawn on
     fi
     return 0                                            # PipeWire mode

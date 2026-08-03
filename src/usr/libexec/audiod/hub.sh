@@ -70,6 +70,31 @@ hub_pulse_ready() {             # hub_pulse_ready <uid> [timeout_s]
     return 1
 }
 
+# Wait until WirePlumber has published at least one real sink.
+#
+# hub_pulse_ready is NOT sufficient on its own: pipewire-pulse binds its socket
+# and answers 'pactl info' within milliseconds of starting, while WirePlumber
+# still needs a second or two to probe ALSA and publish nodes. At boot that
+# gap meant module-combine-sink was created over an EMPTY sink set -- it was
+# logged as "created and set as default" and then disappeared, because a
+# combine sink with no members does not survive. Interactively the gap never
+# showed, since by then the card had long been up.
+#
+# 'Dummy Output' is explicitly not counted: it is what PipeWire publishes when
+# it has no real device, so treating it as a sink would reintroduce the bug.
+hub_sinks_ready() {             # hub_sinks_ready <uid> [timeout_s]
+    local uid="$1" tries=$(( ${2:-15} * 5 )) n
+    while [ "$tries" -gt 0 ]; do
+        n=$(hub_as_user "$uid" pactl list short sinks 2>/dev/null \
+            | awk '$2!="hub_combined" && $2!="auto_null" && $2!~/[Dd]ummy/' | wc -l)
+        [ "${n:-0}" -gt 0 ] && { dbg "hub: $n sink(s) available"; return 0; }
+        sleep 0.2; tries=$((tries - 1))
+    done
+    log "hub: no real sinks appeared for uid $uid; not creating a combine sink"
+    log "hub: (a combine sink with no members does not survive)"
+    return 1
+}
+
 # ---- Bluetooth sink (phones play THROUGH this box) -------------------------
 #
 # We do NOT force the adapter discoverable forever. Instead we expose a bounded
@@ -249,6 +274,35 @@ hub_scan_connect() {            # hub_scan_connect <uid> [scan_seconds]
 # makes BT "survive" VT switches without the user running anything.
 
 HUB_BTWATCH=/usr/libexec/audiod/hub-btwatch.sh
+
+HUB_PULSEWATCH="${HUB_PULSEWATCH:-/usr/libexec/audiod/hub-pulsewatch.sh}"
+
+hub_pulsewatch_start() {        # hub_pulsewatch_start <uid>
+    local uid="$1"
+    [ "${HUB_PULSEWATCH_ENABLE:-yes}" = "yes" ] || return 0
+    [ -x "$HUB_PULSEWATCH" ] || return 0
+    local rundir="/run/user/$uid"
+    if hub_as_user "$uid" sh -c \
+        "daemon --pidfiles='$rundir' --name=hub-pulsewatch --running" 2>/dev/null; then
+        dbg "hub: pulsewatch already running for uid $uid"
+        return 0
+    fi
+    if pgrep -u "$uid" -f "hub-pulsewatch.sh $uid" >/dev/null 2>&1; then
+        dbg "hub: pulsewatch process already present for uid $uid"
+        return 0
+    fi
+    hub_as_user "$uid" sh -c \
+        "daemon -rB --pidfiles='$rundir' --name=hub-pulsewatch -- '$HUB_PULSEWATCH' $uid" \
+        2>/dev/null
+    log "hub: started pipewire-pulse watcher for uid $uid"
+}
+
+hub_pulsewatch_stop() {         # hub_pulsewatch_stop <uid>
+    local uid="$1" rundir="/run/user/$1"
+    hub_as_user "$uid" sh -c \
+        "daemon --pidfiles='$rundir' --name=hub-pulsewatch --stop" 2>/dev/null
+    dbg "hub: stopped pulsewatch for uid $uid"
+}
 
 hub_btwatch_start() {           # hub_btwatch_start <uid>
     local uid="$1"
@@ -470,6 +524,30 @@ hub_net_init() {                # hub_net_init <uid>
 # When created, hub_combined is made the DEFAULT sink so everything you play
 # lands on all chosen outputs without extra steps.
 
+# --- combine intent ---------------------------------------------------------
+#
+# hub-pulsewatch restores the combine sink when pipewire-pulse is replaced. It
+# must not undo a deliberate 'audioctl hub combine off', so the user's last
+# explicit choice is recorded here. Absent file = follow the config.
+
+hub_combine_want_file() {       # hub_combine_want_file <uid>
+    echo "/run/user/$1/audiod-hub-combine"
+}
+
+hub_combine_want_set() {        # hub_combine_want_set <uid> <on|off>
+    local f; f=$(hub_combine_want_file "$1")
+    hub_as_user "$1" sh -c "printf '%s\n' '$2' > '$f'" 2>/dev/null
+}
+
+# Should a combine sink exist for this uid right now?
+hub_combine_wanted() {          # hub_combine_wanted <uid>
+    [ "${COMBINE:-no}" = "yes" ] || return 1
+    local f; f=$(hub_combine_want_file "$1") want=""
+    [ -r "$f" ] && want=$(sed -n '1p' "$f" 2>/dev/null)
+    [ "$want" = "off" ] && return 1
+    return 0
+}
+
 hub_combined_id() {             # -> pactl sink id of hub_combined, or empty
     local uid="$1"
     hub_as_user "$uid" pactl list short sinks 2>/dev/null \
@@ -480,6 +558,7 @@ hub_combine_init() {            # hub_combine_init <uid>
     [ "${COMBINE:-no}" = "yes" ] || return 0
     local uid="$1"
     hub_pulse_ready "$uid" || return 1
+    hub_sinks_ready "$uid" "${COMBINE_WAIT:-15}" || return 1
 
     # Already there? Test for OUR sink, not merely for "some combine module".
     # Matching any module-combine-sink meant a leftover or foreign combine
@@ -487,6 +566,7 @@ hub_combine_init() {            # hub_combine_init <uid>
     # set-default-sink below failed silently, and the user was left with
     # COMBINE=yes and no hub_combined anywhere.
     if [ -n "$(hub_combined_id "$uid")" ]; then
+        hub_combine_want_set "$uid" on
         log "hub: 'hub_combined' already present"
         hub_as_user "$uid" pactl set-default-sink hub_combined >/dev/null 2>&1
         return 0
@@ -528,7 +608,11 @@ hub_combine_init() {            # hub_combine_init <uid>
     fi
 
     if hub_as_user "$uid" pactl set-default-sink hub_combined >/dev/null 2>&1; then
-        log "hub: combine-sink 'hub_combined' created and set as default"
+        local nmem
+        nmem=$(hub_as_user "$uid" pactl list short sinks 2>/dev/null \
+               | awk '$2!="hub_combined" && $2!="auto_null" && $2!~/[Dd]ummy/' | wc -l)
+        hub_combine_want_set "$uid" on
+        log "hub: combine-sink 'hub_combined' created over $nmem sink(s), now default"
     else
         log "hub: combine-sink created, but could not set it as default"
     fi
@@ -548,6 +632,8 @@ hub_combine_module_id() {       # hub_combine_module_id <uid>
 # Remove the combine sink and fall back to a real sink as default.
 hub_combine_off() {             # hub_combine_off <uid>
     local uid="$1" id
+    # Remember the choice so hub-pulsewatch does not helpfully put it back.
+    hub_combine_want_set "$uid" off
     id=$(hub_combine_module_id "$uid")
     if [ -z "$id" ]; then
         # Nothing of ours. Say whether some OTHER combine module is loaded, so
@@ -682,6 +768,13 @@ hub_status_report() {           # hub_status_report <uid>
         echo "                 outputs now:"
         hub_as_user "$uid" pactl list short sinks 2>/dev/null \
             | awk '$2!="hub_combined"{printf "                   - %s\n", $2}'
+    elif [ "${COMBINE:-no}" = "yes" ] && ! hub_combine_wanted "$uid"; then
+        # Turned off by hand. Reporting this as a mismatch made a working
+        # system look broken, which is the same kind of false alarm the old
+        # config-echo status used to produce.
+        echo "  combine sink : off -- you switched it off ('audioctl hub combine off')"
+        echo "                 config still says COMBINE=yes; turn it back on with:"
+        echo "                 audioctl hub combine"
     elif [ "${COMBINE:-no}" = "yes" ]; then
         echo "  combine sink : COMBINE=yes but hub_combined DOES NOT EXIST  <-- mismatch"
         echo "                 create it now with: audioctl hub combine"
@@ -715,6 +808,10 @@ hub_start() {                   # hub_start <uid>
         hub_btwatch_start "$uid"    # auto-reconnect BT on VT-switch-back
         hub_net_init     "$uid"     # owner exposes network audio (if configured)
         hub_combine_init "$uid"     # owner's combine sink (if configured)
+        # Objects loaded into pipewire-pulse die when it is replaced, and a
+        # service restart raises no login1 signal, so nothing would rebuild
+        # them. This watcher does.
+        hub_pulsewatch_start "$uid"
         log "hub: owner ready for uid $uid"
     else
         # A second hub member on another seat/VT. Do NOT let them grab the shared
@@ -733,6 +830,7 @@ hub_stop() {                    # hub_stop <uid>
     hub_user_allowed "$uid" || return 0
     # If this was the owner, stop their BT watcher and release ownership.
     hub_btwatch_stop "$uid"
+    hub_pulsewatch_stop "$uid"
     hub_release_owner "$uid"
     # We do NOT power the adapter off (other members may still be using it).
     log "hub: user $uid (hub member) logged out; shared BT adapter left as-is"

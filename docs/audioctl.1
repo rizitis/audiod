@@ -1,7 +1,7 @@
 .\" audioctl.1 -- manual page for the audiod user control tool
 .\" Copyright 2026 Ioannis Anagnostakis
 .\" Licensed under the Apache License, Version 2.0
-.TH AUDIOCTL 1 "2026-01-01" "audiod 0.2.0" "User Commands"
+.TH AUDIOCTL 1 "2026-08-03" "audiod 3.0" "User Commands"
 .SH NAME
 audioctl \- control your own PipeWire audio stack, and the optional audio hub
 .SH SYNOPSIS
@@ -60,6 +60,12 @@ Restart the whole stack, or a single named component (for example
 .B hub status
 Show hub mode, your group membership, whether you are the current owner, and
 the state of Bluetooth, network audio, and combine.
+.IP
+Every line describing runtime state is answered by querying PipeWire, BlueZ or
+the ownership state file \-\- not by echoing the configuration. Where
+configuration and reality disagree the line says so, so a hub that failed to
+come up cannot look healthy. A combine sink you switched off yourself is
+reported as your choice rather than as a fault.
 .TP
 .BR "hub scan" " [" \fIseconds\fR ]
 Scan for nearby Bluetooth devices (speakers and phones) for
@@ -93,6 +99,25 @@ sink that mirrors playback to several outputs at once (built\-in speakers,
 every HDMI output, and any Bluetooth speaker) and make it the default; with
 .B off
 remove it and restore a normal default sink.
+.IP
+The set of outputs is fixed when the sink is created. Audio
+.I sources
+may come and go freely, but a
+.I new output
+connected afterwards does not join the mix \-\- connect Bluetooth speakers
+first, or rebuild with
+.B "hub combine off"
+followed by
+.BR "hub combine" .
+.IP
+Because the sink is loaded into
+.B pipewire\-pulse
+it dies whenever that process is replaced. A per\-owner watcher rebuilds it
+automatically; running
+.B "hub combine off"
+records the choice in
+.I /run/user/$uid/audiod\-hub\-combine
+so the watcher does not undo it.
 .TP
 .B hub net
 (Re)apply the network\-audio configuration. This is deny\-by\-default: it does
@@ -112,6 +137,9 @@ Configuration, including the hub keys
 .BR HUB_BT_AUTOPLAY ,
 .BR COMBINE ,
 .BR COMBINE_SLAVES ,
+.BR COMBINE_WAIT ,
+.BR HUB_PULSEWATCH_ENABLE ,
+.BR HUB_PULSEWATCH_INTERVAL ,
 .BR NET_TCP ,
 .BR NET_ACL ,
 .BR NET_PORT ).
@@ -121,6 +149,11 @@ The ordered service list.
 .TP
 .I ~/.run/*.pid
 Per\-user pidfiles for the supervised services.
+.TP
+.I /run/user/$uid/audiod\-hub\-combine
+Records whether you switched the combine sink off by hand, so the
+.B pipewire\-pulse
+watcher does not recreate it behind your back.
 .SH EXIT STATUS
 Returns 0 on success and non\-zero if a requested action fails (for example an
 out\-of\-range scan selection, or a failed Bluetooth connect).
@@ -156,6 +189,7 @@ monitors, so only trusted machines should be listed. Only members of the hub
 group can use hub features.
 .SH SEE ALSO
 .BR audiod (8),
+.BR audiod\-doctor.sh (8),
 .BR daemon (1),
 .BR bluetoothctl (1),
 .BR wpctl (1),
@@ -163,9 +197,12 @@ group can use hub features.
 .BR loginctl (1)
 .PP
 Full documentation:
-.I /usr/doc/audiod\-0.2.0/README.md
+.I /usr/doc/audiod\-3.0/README.md
 and
 .IR GAMER\-GUIDE.md .
+.PP
+If ordinary audio works but the hub is absent, see the DIAGNOSTICS section of
+.BR audiod (8).
 .SH AUTHOR
 Ioannis Anagnostakis, 2026.
 .SH LICENSE

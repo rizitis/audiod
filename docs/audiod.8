@@ -1,7 +1,7 @@
 .\" audiod.8 -- manual page for the audiod session-manager daemon
 .\" Copyright 2026 Ioannis Anagnostakis
 .\" Licensed under the Apache License, Version 2.0
-.TH AUDIOD 8 "2026-01-01" "audiod 0.2.0" "System Administration"
+.TH AUDIOD 8 "2026-08-03" "audiod 3.0" "System Administration"
 .SH NAME
 audiod \- elogind\-driven per\-user audio session manager for Slackware
 .SH SYNOPSIS
@@ -22,14 +22,30 @@ and shell. elogind is used unmodified.
 It watches elogind's
 .B org.freedesktop.login1
 D\-Bus interface for
-.B UserNew
+.BR UserNew ,
+.BR UserRemoved ,
+.B SessionNew
 and
-.B UserRemoved
-signals. Because elogind reference\-counts a user's sessions,
+.BR SessionRemoved .
+Because elogind reference\-counts a user's sessions,
 .B UserNew
 fires only on a user's first login and
 .B UserRemoved
-only on their last logout. On first login
+only on their last logout.
+.PP
+The session signals are not redundant. Where
+.BR loginctl (1)
+lingering is enabled for a user, elogind creates that user's object at boot,
+before anybody has logged in \-\- so the later graphical login raises
+.B SessionNew
+and no
+.B UserNew
+at all. Both pairs are therefore handled; the handlers are idempotent, so
+whichever signal arrives first takes effect and the other is a no\-op.
+.B SessionRemoved
+tears the stack down only once the user has no local seated session left.
+.PP
+On first login
 .B audiod
 starts
 .BR pipewire ,
@@ -165,6 +181,9 @@ Hub keys:
 .BR HUB_BT_AUTOPLAY ,
 .BR COMBINE ,
 .BR COMBINE_SLAVES ,
+.BR COMBINE_WAIT ,
+.BR HUB_PULSEWATCH_ENABLE ,
+.BR HUB_PULSEWATCH_INTERVAL ,
 .BR NET_TCP ,
 .BR NET_ACL ,
 .BR NET_PORT .
@@ -180,6 +199,35 @@ in the login PAM stack. Hub mode additionally needs
 with
 .B bluetoothd
 running.
+.SH DIAGNOSTICS
+.B audiod
+logs to syslog with the tag
+.BR audiod .
+.PP
+A hub that is missing while ordinary audio still works almost always means
+.BR pactl (1)
+is talking to a different server than
+.BR wpctl (1):
+a standalone PulseAudio daemon and
+.B pipewire\-pulse
+both want
+.IR /run/user/$uid/pulse/native ,
+and whichever binds it first receives every
+.B pactl
+call. Check with
+.B "pactl info | grep \(aqServer Name\(aq"
+and
+.BR "pgrep \-a pulseaudio" .
+.BR audiod\-doctor.sh (8)
+repairs the two causes: an
+.I /etc/xdg/autostart/pulseaudio.desktop
+reinstated by a package upgrade, and a per\-user
+.I ~/.config/pulse/client.conf
+that shadows the system one (libpulse uses the per\-user file
+.I instead
+of the system file rather than merging them, so a system\-wide
+.B "autospawn = no"
+silently stops applying).
 .SH LIMITATIONS
 Two different local users cannot share one sound card at once (a kernel/ALSA
 limit, identical under systemd); the inactive session falls back to Dummy
@@ -189,6 +237,7 @@ cross\-user sharing over the network, see the separate
 project.
 .SH SEE ALSO
 .BR audioctl (1),
+.BR audiod\-doctor.sh (8),
 .BR daemon (1),
 .BR elogind (8),
 .BR loginctl (1),
@@ -197,7 +246,7 @@ project.
 .BR wireplumber (1)
 .PP
 Full documentation:
-.IR /usr/doc/audiod\-0.2.0/README.md .
+.IR /usr/doc/audiod\-3.0/README.md .
 .SH AUTHOR
 Ioannis Anagnostakis, 2026.
 .SH LICENSE

@@ -37,9 +37,9 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
 ## What it does
 
 * **Reacts to login/logout, not to shells.** It watches elogind's
-  `org.freedesktop.login1` D-Bus interface for `UserNew` / `UserRemoved`
-  signals. elogind reference-counts a user's sessions for us, so `UserNew`
-  fires only on the user's *first* login and `UserRemoved` only on their
+  `org.freedesktop.login1` D-Bus interface for `UserNew`/`UserRemoved` **and**
+  `SessionNew`/`SessionRemoved`. elogind reference-counts a user's sessions, so
+  `UserNew` fires only on the user's *first* login and `UserRemoved` only on their
   *last* logout. One PipeWire stack per user, surviving VT switches and
   multiple concurrent sessions of the same user.
 
@@ -52,7 +52,14 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
   (respawn + stop-when-session-ends) — the exact mechanism Slackware's stock
   scripts already use, so crash-restart still works.
 
-* **Tears down cleanly on last logout.** On `UserRemoved` it stops the user's
+* **Handles lingering users.** With `loginctl enable-linger` the user object is
+  created at boot, before anyone logs in, so the graphical login raises
+  `SessionNew` and **no `UserNew`**. Keying on `UserNew` alone meant nothing
+  ever started on such a system. Both signal pairs are handled and the handlers
+  are idempotent, so whichever arrives first wins.
+
+* **Tears down cleanly on last logout.** On `UserRemoved` (or on the last
+  `SessionRemoved`, for lingering users) it stops the user's
   stack, targeted by name. No orphaned PipeWire processes left behind (a real
   gap in the stock setup, especially on multi-user machines).
 
@@ -110,7 +117,8 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
 ```
         elogind (login1 D-Bus)                 audiod (root daemon)
         ----------------------                 --------------------
-  user first login  --> UserNew(uid)  ------>  gate: seat + Class=user + Remote=no ?
+  user first login  --> UserNew(uid)     --->  gate: seat + Class=user + Remote=no ?
+     ...or, with linger --> SessionNew(id) --/   (id resolved to its uid)
                                                  |
                                                  v
                                         ensure session bus (detect/reuse, opt. spawn)
@@ -121,7 +129,8 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
                                                  --> start pipewire-pulse
                                         (each under: daemon -rB, respawn)
 
-  user last logout --> UserRemoved(uid) ----->  stop the stack, targeted by name
+  user last logout --> UserRemoved(uid)  --->  stop the stack, targeted by name
+     ...or, with linger --> SessionRemoved --/   (only once no seated session is left)
 ```
 
 * **Reactor** (`/usr/sbin/audiod`): a foreground root daemon. On start it
@@ -140,7 +149,8 @@ rely on retry/respawn to eventually converge — a race that some machines lose.
 ## Requirements
 
 * **elogind** (any reasonably recent version that exposes the login1 D-Bus
-  interface with `UserNew`/`UserRemoved` — verified on 257.16).
+  interface with `UserNew`/`UserRemoved`/`SessionNew`/`SessionRemoved` —
+  verified on 257.16).
 * **psmisc** (provides `fuser`, used for the session-bus liveness check) —
   part of the Slackware base.
 * **libslack `daemon(1)`** — already used by Slackware's stock PipeWire scripts.
@@ -281,11 +291,20 @@ may remain as harmless leftovers.
 
 ## Design notes & rationale
 
-* **Why elogind's `UserNew`/`UserRemoved` and not polling `loginctl`?** They
-  are edge-triggered and carry the uid directly; elogind already does the
-  per-user session reference counting, so we get correct first-login /
-  last-logout semantics for free. Verified empirically: a second login on
-  another VT does not re-fire `UserNew`.
+* **Why elogind's signals and not polling `loginctl`?** They are
+  edge-triggered and carry the uid directly; elogind already does the per-user
+  session reference counting, so we get correct first-login / last-logout
+  semantics for free. Verified empirically: a second login on another VT does
+  not re-fire `UserNew`.
+* **Why `SessionNew` as well?** Because with lingering enabled the user object
+  predates every login, so `UserNew` never fires for the login you care about.
+  Sessions are the event that actually correlates with "someone is now sitting
+  at this machine".
+* **Why reconcile on every stream reconnect, not once at startup?**
+  `gdbus monitor` can drop, and a login during the gap would otherwise be
+  invisible forever. Reconcile is cheap and idempotent. It also runs *after*
+  the stream is attached, so anything happening during it is buffered rather
+  than missed.
 * **Why not use the new elogind userdb/varlink features?** They are identity
   only (users/groups) and expose no session-bus or service-control surface;
   the login1 D-Bus interface (core logind, present in every elogind) is what
