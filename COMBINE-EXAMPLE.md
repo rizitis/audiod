@@ -42,6 +42,7 @@ hub status for omen (uid 10000):
   membership   : member of audiohub
   owner policy : auto (first hub member to log in claims it)
   owner now    : you (holds card + Bluetooth)
+  bluez (WP)   : enabled
   VT watcher   : running
   Bluetooth    : adapter present, 1 device(s) connected
                  BT sinks: bluez_output.41_42_E4_0C_EA_BB.1
@@ -59,7 +60,8 @@ hub status for omen (uid 10000):
 Everything the hub needs is in place, and — this matters — **every runtime line
 above is a live query, not an echo of the config file**. `combine sink` asks
 PipeWire whether `hub_combined` actually exists and whether it is the default;
-`Bluetooth` asks BlueZ; `owner now` reads the ownership state file; `VT watcher`
+`Bluetooth` asks BlueZ; `owner now` reads the ownership state file; `bluez (WP)`
+checks for the guest drop-in that turns WirePlumber's Bluetooth off; `VT watcher`
 looks for the running process.
 
 An earlier version printed the configuration variables instead, which meant it

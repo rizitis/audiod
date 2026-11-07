@@ -1,6 +1,78 @@
 # Changelog
 
 
+## 3.1 — a guest drop-in could take Bluetooth away for good
+
+Found on a live box: after an upgrade and reboot the owner had no Bluetooth at
+all. `bluetoothctl connect` failed in microseconds with no HCI traffic, because
+the user's WirePlumber ran with the bluez monitor off and no A2DP endpoint was
+ever registered. The log said the owner was a "GUEST".
+
+### Fixed: an unknown `HUB_OWNER` made every member a guest
+
+`hub_claim_owner` did `id -u "$HUB_OWNER" || return 1`. A typo in the name
+returned "not owner" for everybody, without a log line, so every member got
+the guest drop-in and lost Bluetooth. An unknown name is now ignored, logged as
+a WARNING on every claim, and auto ownership is used. `audioctl hub status`
+marks it as a mismatch.
+
+### Fixed: the guest drop-in outlived everything
+
+`89-audiod-hub-no-bluez.conf` was only ever removed when the same user later
+became owner with hub mode on. Logout, `HUB_MODE=no`, leaving the group,
+`audiod-restore.sh` and `removepkg` all left it in place, and it disables
+bluez in WirePlumber for that user indefinitely. It is now removed:
+
+* on the guest's logout (`hub_stop`),
+* on the next login when hub mode does not apply to the user (`hub_start`
+  with `HUB_MODE=no` or not in `HUB_GROUP`), restarting their wireplumber,
+* by `audiod-restore.sh`, for every user, run as that user.
+
+When the drop-in is written the log now names the file. `audioctl hub status`
+has a `bluez (WP)` line and flags the drop-in when you are the owner.
+
+### Fixed: a stale owner kept everyone a guest until reboot
+
+If the owner's logout was never seen, `/run/audiod-hub-owner` kept their uid
+and every later member became a guest. A recorded owner with no local seated
+session is now released (its watchers stopped) when the next member logs in.
+The guest log line now says which uid holds ownership.
+
+### Fixed: two members could both claim ownership
+
+`dispatch` runs every handler in the background, so two members logging in
+together could both read an empty state file and both act as owner. The
+read-check-write is now under `flock` on `/run/audiod-hub-owner.lock`.
+
+### Changed: wireplumber restarts go through the supervisor
+
+The guest on/off paths restarted wireplumber with a blind `daemon -rB`. They
+now use `stop_service`/`start_service`, and only when audiod's supervisor
+actually runs it, so a wireplumber started some other way is not duplicated.
+
+### New: `removepkg` removes everything
+
+The package ships `install/douninst.sh`. After `removepkg` deletes the files it
+stops audiod and the hub watchers, removes `rc.audiod` and `/etc/audiod` (which
+doinst.sh created from `.new` and removepkg could not track), the exact rc.local
+start block from the docs, the takeover `Hidden=true` edits and the guest
+drop-ins in homes. Extra files in `/etc/audiod` and the `audiohub` group are
+reported, not removed. During `upgradepkg` the new package is already installed
+when the old one is removed, so the script sees an installed audiod and exits
+without touching anything.
+
+### Fixed: docs were not installed
+
+The SlackBuild looked for `README-audiod.md` and `README-hub.md` in the wrong
+place and hid the error with `|| true`. They, `README.Slackware` and
+`CHANGELOG.md` are now in `/usr/doc/audiod-3.1/`.
+
+### Docs
+
+`audiod(8)`, `audioctl(1)`, `README-hub.md`, `README-audiod.md`, the gamer
+guide and the combine example describe the guest drop-in, the `bluez (WP)`
+status line, the `HUB_OWNER` validation and what `removepkg` now cleans up.
+
 ## 3.0 — the hub now actually survives
 
 A debugging session on a live Slackware64-current box turned up six independent

@@ -1,7 +1,7 @@
 .\" audiod.8 -- manual page for the audiod session-manager daemon
 .\" Copyright 2026 Ioannis Anagnostakis
 .\" Licensed under the Apache License, Version 2.0
-.TH AUDIOD 8 "2026-08-03" "audiod 3.0" "System Administration"
+.TH AUDIOD 8 "2026-11-07" "audiod 3.1" "System Administration"
 .SH NAME
 audiod \- elogind\-driven per\-user audio session manager for Slackware
 .SH SYNOPSIS
@@ -81,10 +81,26 @@ stream in. Hub features are restricted to members of the hub group (default
 The first hub member to log in becomes the owner of the shared sound card and
 Bluetooth adapter; a per\-owner watcher
 .RI ( hub\-btwatch.sh )
-stops Bluetooth cleanly across VT switches to prevent a speaker drone. With
+stops Bluetooth cleanly across VT switches to prevent a speaker drone.
+.PP
+Later members are guests: audiod writes
+.I ~/.config/wireplumber/wireplumber.conf.d/89\-audiod\-hub\-no\-bluez.conf
+into their home, which turns WirePlumber's bluez monitor off, so a guest has
+no Bluetooth at all while that file exists. It is removed when the guest logs
+out, when the user later becomes owner, on the next login when hub mode no
+longer applies to that user, and by
+.BR audiod\-restore.sh .
+.PP
+.B HUB_OWNER
+pins the owner to a user name. A name that is not an existing user is
+ignored, logged as a WARNING, and the first\-login rule is used. A recorded
+owner with no local seated session left is released when the next member
+logs in.
+.PP
+With
 .B HUB_MODE=no
-(the default) none of this runs and behaviour is identical to the plain
-session manager. See
+(the default) the hub does nothing and behaviour is identical to the plain
+session manager, except that a leftover guest drop\-in is still removed. See
 .BR audioctl (1)
 for the user\-facing hub commands.
 .SH GATING
@@ -123,6 +139,19 @@ chmod +x /etc/rc.d/rc.audiod
 .PP
 To restore the stock start mechanism, run
 .BR audiod\-restore.sh .
+It also removes hub guest drop\-ins from users' homes.
+.PP
+.B removepkg audiod
+removes everything through the package's uninstall script: rc.audiod,
+.IR /etc/audiod ,
+the rc.local start block, the takeover edits and the guest drop\-ins. Your own
+extra files in
+.I /etc/audiod
+and the
+.B audiohub
+group are reported, not removed.
+.B upgradepkg
+does not trigger it.
 Note that upgrading the
 .B pipewire
 package may re\-enable the stock
@@ -143,7 +172,8 @@ User control tool; see
 Shared logic (gate, detection, stack ops).
 .TP
 .I /usr/libexec/audiod/hub.sh
-Optional hub logic (sourced; inert unless HUB_MODE=yes).
+Optional hub logic (sourced always; with HUB_MODE=no it only removes
+leftover guest drop\-ins).
 .TP
 .I /usr/libexec/audiod/hub\-btwatch.sh
 Per\-owner Bluetooth VT\-switch watcher.
@@ -162,6 +192,14 @@ Reactor pidfile.
 .TP
 .I /run/audiod\-hub\-owner
 Hub owner state (cleared on reboot).
+.TP
+.I /run/audiod\-hub\-owner.lock
+Serialises ownership claims.
+.TP
+.I ~/.config/wireplumber/wireplumber.conf.d/89\-audiod\-hub\-no\-bluez.conf
+Guest drop\-in: bluez monitor off for that user. Moved to
+.I ~/.config/wireplumber/89\-audiod\-hub\-no\-bluez.conf.bak
+when removed.
 .SH CONFIGURATION
 Key settings in
 .IR /etc/audiod/audiod.conf :
@@ -246,7 +284,7 @@ project.
 .BR wireplumber (1)
 .PP
 Full documentation:
-.IR /usr/doc/audiod\-3.0/README.md .
+.IR /usr/doc/audiod\-3.1/README.md .
 .SH AUTHOR
 Ioannis Anagnostakis, 2026.
 .SH LICENSE

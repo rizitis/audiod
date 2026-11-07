@@ -264,11 +264,20 @@ in `audiod.conf`. To fully restore the stock PipeWire start mechanism, run
 ## Uninstalling / rollback
 
 ```sh
-sudo /etc/rc.d/rc.audiod stop         # (or Ctrl-C if running in foreground)
-sudo /usr/sbin/audiod-restore.sh      # re-enable the stock autostart
-sudo removepkg audiod                 # removes every packaged file (tracked)
-# then remove the rc.local line you added, if any
+sudo removepkg audiod
 ```
+
+`removepkg` runs the package's `douninst.sh` after the files are gone. It stops
+audiod and the hub watchers, removes `/etc/rc.d/rc.audiod`, `/etc/audiod/`
+(your `audiod.conf` edits included), the exact rc.local start block from this
+README, the takeover edits (`Hidden=true` on the PipeWire autostart) and the hub
+guest drop-ins in users' homes. Files of your own in `/etc/audiod/` and the
+`audiohub` group are left in place and reported. It needs pkgtools with
+`douninst.sh` support (Slackware 15.0 and later). `upgradepkg` does not trigger
+it: when another audiod package is installed the script does nothing.
+
+`audiod-restore.sh` is for going back to the stock start mechanism while
+keeping the package installed.
 
 Nothing runtime survives a reboot (it lives on tmpfs). Edited `*.conf` files
 may remain as harmless leftovers.

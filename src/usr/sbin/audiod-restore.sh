@@ -3,6 +3,9 @@
 #
 # Revert audiod-takeover.sh: re-enable Slackware's stock PipeWire start
 # mechanisms (profile.d + XDG autostart). Does NOT touch PulseAudio settings.
+# Also removes the hub guest drop-ins from users' homes. removepkg audiod
+# does all of this itself through douninst.sh; this script is for going back
+# to the stock start while keeping the package.
 # Run as root. (Stop audiod first if you no longer want it: rc.audiod stop.)
 
 if [ "$(id -u)" != 0 ]; then echo "run as root." >&2; exit 1; fi
@@ -33,6 +36,26 @@ for f in wireplumber pipewire-pulse pipewire; do
         echo "  un-hid $d"
     fi
 done
+
+echo "Removing hub guest drop-ins (they keep Bluetooth off in WirePlumber):"
+# Written into users' homes by hub mode; removepkg does not know about them.
+# Moved, not deleted, and as the user so nothing is done as root in their home.
+found=no
+while IFS=: read -r name _ uid gid _ home _; do
+    [ "$uid" -ge 1000 ] 2>/dev/null || continue
+    [ "$uid" -lt 60000 ] || continue
+    f="$home/.config/wireplumber/wireplumber.conf.d/89-audiod-hub-no-bluez.conf"
+    [ -f "$f" ] || continue
+    found=yes
+    if setpriv --reuid "$uid" --regid "$gid" --init-groups \
+        mv -f "$f" "$home/.config/wireplumber/89-audiod-hub-no-bluez.conf.bak"; then
+        echo "  moved $f (user $name: restart wireplumber or log in again)"
+    else
+        echo "  FAILED to move $f -- remove it by hand, Bluetooth is off for $name"
+    fi
+done < <(getent passwd)
+[ "$found" = no ] && echo "  none found"
+rm -f /run/audiod-hub-owner /run/audiod-hub-owner.lock
 
 echo
 echo "Done. Stock start mechanisms restored."

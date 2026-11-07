@@ -44,6 +44,17 @@ adapter. You normally set nothing. `HUB_OWNER=<user>` in the config is an
 optional override to pin ownership to a specific user. Ownership is remembered
 in `/run` and clears on reboot.
 
+A `HUB_OWNER` that is not an existing user is ignored with a WARNING in the log
+(before 3.1 it silently made every member a guest). A recorded owner with no
+local session left is released when the next member logs in.
+
+Guests get `~/.config/wireplumber/wireplumber.conf.d/89-audiod-hub-no-bluez.conf`,
+which turns WirePlumber's bluez monitor off: **no Bluetooth at all for that
+user** while it exists. It is removed on the guest's logout, when the user
+becomes owner, on the next login when hub mode no longer applies to that user,
+and by `audiod-restore.sh`. `audioctl hub status` shows it on the `bluez (WP)`
+line.
+
 ## VT switching and Bluetooth
 
 On this kind of setup, switching to another VT makes the owner's session
@@ -110,7 +121,8 @@ audioctl hub net                 # (re)apply network audio from the config
 ## Reading `audioctl hub status`
 
 Every runtime line is a live query -- PipeWire for the combine sink, BlueZ for
-Bluetooth, the state file for ownership, the process table for the watchers. It
+Bluetooth, the state file for ownership, the guest drop-in for `bluez (WP)`, the
+process table for the watchers. It
 is deliberately not a summary of the config, because a status that echoes
 configuration reports a healthy hub whether or not anything was created, and a
 hub that silently failed to come up then looks identical to a working one.

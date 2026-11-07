@@ -11,6 +11,7 @@ fi
 For the full Hub version >= 0.2.0 you need ^^ and be sure for these:
 activated on /etc/audiod/audiod.conf --> HUB_MODE=yes
 add user_name that will be the owner HUB_OWNER=user_name (if empty will be the first who login)
+(a name that is not a real user is ignored, check: grep audiod /var/log/messages)
 
 # create the group and add users
 groupadd audiohub
@@ -21,3 +22,12 @@ audioctl hub status
 audioctl hub pair
 
 If you only want the pipewire fix you can disable all above^^
+
+---
+
+removepkg audiod removes everything (needs pkgtools with douninst.sh support,
+Slackware 15.0 and later): rc.audiod, /etc/audiod, the rc.local start block,
+the takeover edits and the hub guest drop-ins in users' homes
+(~/.config/wireplumber/wireplumber.conf.d/89-audiod-hub-no-bluez.conf).
+Extra files you put in /etc/audiod and the audiohub group are left and reported.
+Upgrades (upgradepkg) do not trigger any of this.

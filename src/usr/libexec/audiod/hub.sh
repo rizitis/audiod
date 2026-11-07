@@ -1,8 +1,9 @@
 #!/bin/bash
 # audiod hub extension -- turn the host into a party audio hub.
 #
-# Sourced by audiod ONLY when HUB_MODE=yes in audiod.conf. When HUB_MODE=no
-# (the default) NONE of this runs and audiod behaves exactly as build 7.
+# Sourced by audiod always. When HUB_MODE=no (the default) the hub does nothing
+# and audiod behaves exactly as build 7, except that hub_start/hub_stop still
+# remove a guest drop-in a previous hub session may have left behind.
 #
 # What "hub" adds, on top of the normal per-user PipeWire stack:
 #   * BT_SINK   : phones/laptops pair with this box and play THROUGH it
@@ -353,7 +354,16 @@ hub_btwatch_stop() {            # hub_btwatch_stop <uid>
 HUB_OWNER_STATE=/run/audiod-hub-owner
 
 hub_owner_uname() {             # -> the configured owner's username, or empty
-    printf '%s' "${HUB_OWNER:-}"
+    # An unknown name is treated as unset. Honouring it made every member a
+    # guest, which silently disabled Bluetooth for all of them.
+    [ -n "${HUB_OWNER:-}" ] || return 0
+    id -u "$HUB_OWNER" >/dev/null 2>&1 || return 0
+    printf '%s' "$HUB_OWNER"
+}
+
+# True when HUB_OWNER is set but names no existing user.
+hub_owner_invalid() {
+    [ -n "${HUB_OWNER:-}" ] && ! id -u "$HUB_OWNER" >/dev/null 2>&1
 }
 
 # Read-only: is <uid> the owner right now? (does NOT claim). Used for status.
@@ -392,17 +402,43 @@ hub_owner_uid() {
 
 # Claim ownership for <uid> if it is free. Returns 0 if <uid> is (now) the
 # owner, 1 if someone else already owns it. Writes the /run state on claim.
+#
+# The read-check-write is serialised with flock: dispatch runs every handler in
+# the background, so two members logging in together could both see the state
+# empty and both believe they were owner.
 hub_claim_owner() {             # hub_claim_owner <uid>
+    local rc
+    if [ "$(id -u)" = 0 ] && command -v flock >/dev/null 2>&1; then
+        { flock -x 9; hub_claim_owner_locked "$1"; rc=$?; } 9>"$HUB_OWNER_STATE.lock"
+    else
+        hub_claim_owner_locked "$1"; rc=$?
+    fi
+    return "$rc"
+}
+
+hub_claim_owner_locked() {      # hub_claim_owner_locked <uid>
     local uid="$1" owner; owner=$(hub_owner_uname)
+    if hub_owner_invalid; then
+        log "hub: WARNING: HUB_OWNER='$HUB_OWNER' is not a user; ignoring it (auto owner)"
+    fi
     if [ -n "$owner" ]; then
         # explicit override in config
         local want; want=$(id -u "$owner" 2>/dev/null) || return 1
         [ "$uid" = "$want" ]; return
     fi
     local cur=""
-    [ -r "$HUB_OWNER_STATE" ] && cur=$(cat "$HUB_OWNER_STATE" 2>/dev/null)
+    [ -r "$HUB_OWNER_STATE" ] && cur=$(sed -n '1p' "$HUB_OWNER_STATE" 2>/dev/null)
     if [ -n "$cur" ]; then
-        [ "$uid" = "$cur" ]; return          # already owned (maybe by us)
+        [ "$uid" = "$cur" ] && return 0      # already owned by us
+        # A recorded owner with no local session left (logout we never saw)
+        # would keep everyone else a guest until reboot. Take over instead.
+        if type uid_has_session >/dev/null 2>&1 && ! uid_has_session "$cur"; then
+            log "hub: recorded owner uid $cur has no local session; releasing it"
+            hub_btwatch_stop "$cur"
+            hub_pulsewatch_stop "$cur"
+        else
+            return 1
+        fi
     fi
     # free: claim it
     mkdir -p "$(dirname "$HUB_OWNER_STATE")" 2>/dev/null
@@ -415,7 +451,7 @@ hub_claim_owner() {             # hub_claim_owner <uid>
 # member to log in becomes owner. No-op when HUB_OWNER is pinned in config.
 hub_release_owner() {           # hub_release_owner <uid>
     local uid="$1"
-    [ -n "${HUB_OWNER:-}" ] && return 0      # pinned owner: never release
+    [ -n "$(hub_owner_uname)" ] && return 0  # pinned owner: never release
     local cur=""
     [ -r "$HUB_OWNER_STATE" ] && cur=$(cat "$HUB_OWNER_STATE" 2>/dev/null)
     if [ "$uid" = "$cur" ]; then
@@ -446,11 +482,41 @@ wireplumber.profiles = {
 }
 WPEOF
         log "hub: uid $uid is a guest member; disabled bluez in their WirePlumber"
+        log "hub: (Bluetooth is OFF for uid $uid while $f exists)"
         # restart just their wireplumber so the drop-in takes effect
-        hub_as_user "$uid" sh -c 'daemon --pidfiles=~/.run --name=wireplumber --stop' 2>/dev/null
-        sleep 0.4
-        hub_as_user "$uid" sh -c 'daemon -rB --pidfiles=~/.run --name=wireplumber -- /usr/bin/wireplumber' 2>/dev/null
+        hub_wireplumber_restart "$uid"
     fi
+}
+
+# Restart the user's wireplumber, but only if audiod's supervisor owns it.
+# Starting one blindly next to a copy started some other way gives two.
+hub_wireplumber_restart() {     # hub_wireplumber_restart <uid>
+    local uid="$1"
+    if ! service_running "$uid" wireplumber; then
+        log "hub: wireplumber for uid $uid is not audiod-managed; not restarting it"
+        log "hub: (change takes effect on its next start)"
+        return 0
+    fi
+    stop_service "$uid" wireplumber
+    sleep 0.4
+    start_service "$uid" wireplumber /usr/bin/wireplumber
+}
+
+# Move the guest drop-in out of conf.d (kept as .bak). Returns 0 only if a
+# file was moved. Does not restart anything.
+hub_guest_dropin_clear() {      # hub_guest_dropin_clear <uid>
+    local uid="$1" home
+    home=$(getent passwd "$uid" 2>/dev/null | cut -d: -f6)
+    [ -n "$home" ] && [ -d "$home" ] || return 1
+    local d="$home/.config/wireplumber/wireplumber.conf.d"
+    local f="$d/89-audiod-hub-no-bluez.conf"
+    [ -f "$f" ] || return 1
+    # move it out of conf.d so WirePlumber no longer reads it (no rm)
+    if ! hub_as_user "$uid" mv -f "$f" "$d/../89-audiod-hub-no-bluez.conf.bak" 2>/dev/null; then
+        log "hub: WARNING: could not move $f; Bluetooth stays off for uid $uid"
+        return 1
+    fi
+    return 0
 }
 
 # Re-enable the bluez monitor for a user who is (now) the owner: move the guest
@@ -461,18 +527,10 @@ WPEOF
 # WirePlumber still parses a zero-byte drop-in and the monitor stays off -- so we
 # rename it out of conf.d (kept as .bak, not deleted).
 hub_guest_bt_on() {             # hub_guest_bt_on <uid>
-    local uid="$1" home
-    home=$(getent passwd "$uid" 2>/dev/null | cut -d: -f6)
-    [ -n "$home" ] && [ -d "$home" ] || return 0
-    local d="$home/.config/wireplumber/wireplumber.conf.d"
-    local f="$d/89-audiod-hub-no-bluez.conf"
-    [ -f "$f" ] || return 0
-    # move it out of conf.d so WirePlumber no longer reads it (no rm)
-    hub_as_user "$uid" mv -f "$f" "$d/../89-audiod-hub-no-bluez.conf.bak" 2>/dev/null
+    local uid="$1"
+    hub_guest_dropin_clear "$uid" || return 0
     log "hub: uid $uid is owner; removed guest bluez-disable drop-in (bluez back on)"
-    hub_as_user "$uid" sh -c 'daemon --pidfiles=~/.run --name=wireplumber --stop' 2>/dev/null
-    sleep 0.4
-    hub_as_user "$uid" sh -c 'daemon -rB --pidfiles=~/.run --name=wireplumber -- /usr/bin/wireplumber' 2>/dev/null
+    hub_wireplumber_restart "$uid"
 }
 
 # ---- Network audio (trusted LAN machines send to this box) -----------------
@@ -678,7 +736,9 @@ hub_status_report() {           # hub_status_report <uid>
     # --- ownership (real state, not a guess) --------------------------------
     local ouid oname
     ouid=$(hub_owner_uid)
-    if [ -n "${HUB_OWNER:-}" ]; then
+    if hub_owner_invalid; then
+        echo "  owner policy : HUB_OWNER='$HUB_OWNER' is NOT a user -- ignored, auto  <-- mismatch"
+    elif [ -n "${HUB_OWNER:-}" ]; then
         echo "  owner policy : pinned to '$HUB_OWNER' (HUB_OWNER in audiod.conf)"
     else
         echo "  owner policy : auto (first hub member to log in claims it)"
@@ -695,6 +755,19 @@ hub_status_report() {           # hub_status_report <uid>
             echo "  owner now    : ${oname:-uid $ouid} -- you are a guest"
             echo "                 (to hear the hub: audioshare-guest connect)"
         fi
+    fi
+
+    # --- is bluez switched off for us by a guest drop-in? -------------------
+    local dropin
+    dropin="$(getent passwd "$uid" 2>/dev/null | cut -d: -f6)/.config/wireplumber/wireplumber.conf.d/89-audiod-hub-no-bluez.conf"
+    if [ -f "$dropin" ]; then
+        if [ "$ouid" = "$uid" ]; then
+            echo "  bluez (WP)   : DISABLED by $dropin  <-- mismatch (you are owner)"
+        else
+            echo "  bluez (WP)   : disabled by guest drop-in $dropin"
+        fi
+    else
+        echo "  bluez (WP)   : enabled"
     fi
 
     # --- did the hub actually start for us? ---------------------------------
@@ -793,11 +866,16 @@ hub_status_report() {           # hub_status_report <uid>
 # of who is logged in. The network and combine parts are per-user (each member
 # gets them on their own PipeWire).
 hub_start() {                   # hub_start <uid>
-    hub_enabled || return 0
     local uid="$1"
 
-    if ! hub_user_allowed "$uid"; then
-        dbg "hub: uid $uid not in group ${HUB_GROUP:-audiohub}; skip"
+    # A guest drop-in left behind by an earlier hub session keeps bluez off
+    # for good once hub mode no longer manages this user. Clear it.
+    if ! hub_enabled || ! hub_user_allowed "$uid"; then
+        if hub_guest_dropin_clear "$uid"; then
+            log "hub: uid $uid is not under hub mode; removed leftover guest bluez-disable drop-in"
+            hub_wireplumber_restart "$uid"
+        fi
+        hub_enabled && dbg "hub: uid $uid not in group ${HUB_GROUP:-audiohub}; skip"
         return 0
     fi
 
@@ -817,7 +895,7 @@ hub_start() {                   # hub_start <uid>
         # A second hub member on another seat/VT. Do NOT let them grab the shared
         # BT device from the owner: disable bluez in their WirePlumber. To HEAR
         # the hub they connect as an audioshare guest (they don't hold the card).
-        log "hub: uid $uid is a hub GUEST member (owner already claimed)"
+        log "hub: uid $uid is a hub GUEST member (owner uid $(hub_owner_uid) already claimed)"
         hub_guest_bt_off "$uid"
         log "hub: guest ready for uid $uid -- to hear the hub, use: audioshare-guest connect"
     fi
@@ -825,8 +903,13 @@ hub_start() {                   # hub_start <uid>
 
 # Called when an allowed user's stack is torn down.
 hub_stop() {                    # hub_stop <uid>
-    hub_enabled || return 0
     local uid="$1"
+    # The guest drop-in only makes sense while the guest session lives. Left in
+    # place it outlives hub mode, audiod and reboots. Their stack is going down
+    # next, so no wireplumber restart is needed.
+    hub_guest_dropin_clear "$uid" && \
+        log "hub: uid $uid logged out; removed guest bluez-disable drop-in"
+    hub_enabled || return 0
     hub_user_allowed "$uid" || return 0
     # If this was the owner, stop their BT watcher and release ownership.
     hub_btwatch_stop "$uid"

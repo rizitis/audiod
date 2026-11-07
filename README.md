@@ -324,11 +324,20 @@ in `audiod.conf`. To fully restore the stock PipeWire start mechanism, run
 ## Uninstalling / rollback
 
 ```sh
-sudo /etc/rc.d/rc.audiod stop         # (or Ctrl-C if running in foreground)
-sudo /usr/sbin/audiod-restore.sh      # re-enable the stock autostart
-sudo removepkg audiod                 # removes every packaged file (tracked)
-# then remove the rc.local line you added, if any
+sudo removepkg audiod
 ```
+
+`removepkg` runs the package's `douninst.sh` after the files are gone. It stops
+audiod and the hub watchers, removes `/etc/rc.d/rc.audiod`, `/etc/audiod/`
+(your `audiod.conf` edits included), the exact rc.local start block from this
+README, the takeover edits (`Hidden=true` on the PipeWire autostart) and the hub
+guest drop-ins in users' homes. Files of your own in `/etc/audiod/` and the
+`audiohub` group are left in place and reported. It needs pkgtools with
+`douninst.sh` support (Slackware 15.0 and later). `upgradepkg` does not trigger
+it: when another audiod package is installed the script does nothing.
+
+`audiod-restore.sh` is for going back to the stock start mechanism while
+keeping the package installed.
 
 Nothing runtime survives a reboot (it lives on tmpfs). Edited `*.conf` files
 may remain as harmless leftovers.
@@ -487,7 +496,18 @@ user at a time. The **first** hub member to log in automatically becomes the
 owner (recorded in `/run/audiod-hub-owner`, cleared on reboot); later members
 are kept from grabbing the shared adapter. You normally set nothing.
 `HUB_OWNER=<user>` is an optional override to pin ownership regardless of login
-order.
+order. A name that is not an existing user is ignored with a WARNING in the log;
+before 3.1 it silently made every member a guest.
+
+A recorded owner that no longer has a local session (a logout audiod never
+saw) is released when the next member logs in, instead of keeping everyone a
+guest until reboot.
+
+Guests get `~/.config/wireplumber/wireplumber.conf.d/89-audiod-hub-no-bluez.conf`,
+which turns WirePlumber's bluez monitor off: **no Bluetooth at all for that
+user** while it exists. Since 3.1 it is removed on the guest's logout, on the
+next login when hub mode no longer applies to that user, and by
+`audiod-restore.sh`. `audioctl hub status` shows it on the `bluez (WP)` line.
 
 ### Bluetooth pairing & security
 

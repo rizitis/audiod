@@ -52,7 +52,7 @@ The SlackBuild ships a ready-to-go gamer config when you pass `GAME=ON`:
 
 ```sh
 GAME=ON bash audiod.SlackBuild
-sudo upgradepkg --install-new /tmp/audiod-3.0-noarch-1_rtz.txz
+sudo upgradepkg --install-new /tmp/audiod-3.1-noarch-1_rtz.txz
 ```
 
 This installs a config with hub mode **on** and combine (sound everywhere)
@@ -62,7 +62,7 @@ This installs a config with hub mode **on** and combine (sound everywhere)
 
 ```sh
 bash audiod.SlackBuild
-sudo upgradepkg --install-new /tmp/audiod-3.0-noarch-1_rtz.txz
+sudo upgradepkg --install-new /tmp/audiod-3.1-noarch-1_rtz.txz
 # then edit /etc/audiod/audiod.conf and set HUB_MODE=yes (and COMBINE=yes)
 ```
 
@@ -108,7 +108,10 @@ audioctl hub status
 ```
 
 You should see `HUB_MODE: yes`, `membership: member of audiohub`, and
-`owner now: you (holds card + Bluetooth)`.
+`owner now: you (holds card + Bluetooth)` and `bluez (WP): enabled`. If
+`bluez (WP)` says DISABLED while you are owner, Bluetooth will not work for
+you; `grep audiod /var/log/messages` shows why (for example a `HUB_OWNER` that
+is not a real user name).
 
 ---
 

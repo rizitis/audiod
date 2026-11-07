@@ -23,7 +23,7 @@
 cd $(dirname $0) ; CWD=$(pwd)
 
 PRGNAM=audiod
-VERSION=${VERSION:-3.0}
+VERSION=${VERSION:-3.1}
 BUILD=${BUILD:-1}
 TAG=${TAG:-_rtz}
 PKGTYPE=${PKGTYPE:-txz}
@@ -109,9 +109,10 @@ install -m 0644 $CWD/docs/audiod.8   $PKG/usr/man/man8/audiod.8
 
 # --- docs ------------------------------------------------------------------
 mkdir -p $PKG/usr/doc/$PRGNAM-$VERSION
-install -m 0644 $SRC/README-audiod.md                $PKG/usr/doc/$PRGNAM-$VERSION/README.md 2>/dev/null || true
+install -m 0644 $CWD/docs/README-audiod.md           $PKG/usr/doc/$PRGNAM-$VERSION/README.md
 # hub docs, if present
-install -m 0644 $CWD/README-hub.md                   $PKG/usr/doc/$PRGNAM-$VERSION/README-hub.md 2>/dev/null || true
+install -m 0644 $CWD/docs/README-hub.md              $PKG/usr/doc/$PRGNAM-$VERSION/README-hub.md
+install -m 0644 $CWD/README.Slackware $CWD/CHANGELOG.md $PKG/usr/doc/$PRGNAM-$VERSION/
 cat $CWD/$PRGNAM.SlackBuild > $PKG/usr/doc/$PRGNAM-$VERSION/$PRGNAM.SlackBuild
 
 find $PKG/usr/man -type f -exec gzip -9 {} \;
@@ -121,6 +122,8 @@ for i in $( find $PKG/usr/man -type l ) ; do ln -s $( readlink $i ).gz $i.gz ; r
 mkdir -p $PKG/install
 cat $CWD/slack-desc > $PKG/install/slack-desc
 cat $CWD/doinst.sh  > $PKG/install/doinst.sh
+# removepkg runs this after the files are gone (see the script header)
+cat $CWD/douninst.sh > $PKG/install/douninst.sh
 
 chown -R root:root $PKG
 cd $PKG

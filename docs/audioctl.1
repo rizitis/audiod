@@ -1,7 +1,7 @@
 .\" audioctl.1 -- manual page for the audiod user control tool
 .\" Copyright 2026 Ioannis Anagnostakis
 .\" Licensed under the Apache License, Version 2.0
-.TH AUDIOCTL 1 "2026-08-03" "audiod 3.0" "User Commands"
+.TH AUDIOCTL 1 "2026-11-07" "audiod 3.1" "User Commands"
 .SH NAME
 audioctl \- control your own PipeWire audio stack, and the optional audio hub
 .SH SYNOPSIS
@@ -66,6 +66,13 @@ the ownership state file \-\- not by echoing the configuration. Where
 configuration and reality disagree the line says so, so a hub that failed to
 come up cannot look healthy. A combine sink you switched off yourself is
 reported as your choice rather than as a fault.
+.IP
+The
+.B bluez (WP)
+line shows whether the guest drop\-in has turned WirePlumber's Bluetooth off
+for you, and marks it as a mismatch if you are the owner. A
+.B HUB_OWNER
+that names no existing user is shown as ignored.
 .TP
 .BR "hub scan" " [" \fIseconds\fR ]
 Scan for nearby Bluetooth devices (speakers and phones) for
@@ -197,7 +204,7 @@ group can use hub features.
 .BR loginctl (1)
 .PP
 Full documentation:
-.I /usr/doc/audiod\-3.0/README.md
+.I /usr/doc/audiod\-3.1/README.md
 and
 .IR GAMER\-GUIDE.md .
 .PP
